@@ -1,0 +1,3 @@
+import { Menu, Sparkles } from "lucide-react";
+import { Link } from "react-router-dom";
+export default function Topbar() { return <header className="flex h-[72px] items-center justify-between border-b border-white/[.06] px-5 lg:px-8"><Link to="/" className="flex items-center gap-2 lg:hidden"><span className="grid h-8 w-8 place-items-center rounded-lg bg-violet-400 text-zinc-950"><Sparkles size={15}/></span><b className="text-sm text-white">Tiny Wins</b></Link><p className="hidden text-sm text-zinc-500 sm:block">One focused action at a time.</p><button className="rounded-xl p-2 text-zinc-500 hover:bg-white/[.05] hover:text-white lg:hidden" aria-label="Open navigation"><Menu size={20}/></button></header>; }
