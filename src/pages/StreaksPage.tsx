@@ -19,7 +19,7 @@ export default function StreaksPage() {
   const [newGroupDesc, setNewGroupDesc] = useState("");
 
   const [message, setMessage] = useState<string | null>(null);
-  const [showWeeklyReflection, setShowWeeklyReflection] = useState(false);
+  const [_showWeeklyReflection, setShowWeeklyReflection] = useState(false);
   const [growthMetrics] = useState({
     this_week_score: 0,
     improvement_delta: 0,
