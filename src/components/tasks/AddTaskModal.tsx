@@ -125,7 +125,7 @@ export default function AddTaskModal({
             exit={{ opacity: 0, y: 8, scale: 0.98 }}
             transition={{ duration: 0.2 }}
             onSubmit={handleSubmit}
-            className="w-full max-w-lg rounded-2xl border border-white/[0.08] bg-[#111114] p-6 shadow-2xl"
+            className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border border-white/[0.08] bg-[#111114] p-5 sm:p-6 shadow-2xl"
           >
             <div className="flex items-start justify-between">
               <div>

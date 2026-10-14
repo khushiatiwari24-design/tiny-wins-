@@ -29,7 +29,7 @@ export default function StrugglingModal({ task, onClose, onSelectMinimum, onTake
 
   return (
     <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-      <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-md w-full p-6 space-y-5 shadow-2xl">
+      <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-md w-full p-4 sm:p-6 space-y-4 sm:space-y-5 shadow-2xl max-h-[90vh] overflow-y-auto">
         <div>
           <span className="text-xs font-semibold tracking-wider text-purple-400 uppercase">Friction Check</span>
           <h3 className="text-lg font-bold text-white mt-1">What's making this hard right now?</h3>

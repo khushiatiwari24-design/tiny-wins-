@@ -113,7 +113,7 @@ export default function TaskItem({
 
       {/* Priority */}
       <span
-        className={`hidden rounded-md px-2 py-1 text-[10px] font-medium sm:block ${
+        className={`rounded-md px-1.5 py-0.5 sm:px-2 sm:py-1 text-[9px] sm:text-[10px] font-medium shrink-0 ${
           priorityStyles[task.priority]
         }`}
       >
@@ -124,7 +124,7 @@ export default function TaskItem({
       <div className="relative" ref={menuRef}>
         <button
           onClick={() => setMenuOpen((open) => !open)}
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-zinc-700 opacity-0 transition hover:bg-white/[0.05] hover:text-zinc-300 group-hover:opacity-100"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-zinc-400 sm:text-zinc-600 opacity-100 sm:opacity-0 transition hover:bg-white/[0.08] hover:text-white sm:group-hover:opacity-100 active:scale-95"
           aria-label="Task options"
         >
           <MoreHorizontal size={17} />

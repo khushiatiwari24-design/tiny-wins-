@@ -238,11 +238,11 @@ export default function StreakGroupDetailPage() {
   }
 
   return (
-    <div className="relative mx-auto max-w-6xl space-y-8 overflow-hidden bg-[radial-gradient(circle_at_top_right,rgba(245,158,11,.12),transparent_32%),radial-gradient(circle_at_bottom_left,rgba(244,114,182,.1),transparent_30%)] p-5 lg:p-8">
+    <div className="relative mx-auto max-w-6xl space-y-5 sm:space-y-8 overflow-hidden bg-[radial-gradient(circle_at_top_right,rgba(245,158,11,.12),transparent_32%),radial-gradient(circle_at_bottom_left,rgba(244,114,182,.1),transparent_30%)] p-3.5 sm:p-5 lg:p-8">
 
       {/* Top Header */}
-      <div className="glass-panel relative z-10 overflow-hidden rounded-[2rem] border-orange-200/15 bg-[linear-gradient(120deg,rgba(91,35,65,.7),rgba(30,41,79,.55))] p-6 lg:p-8">
-        <div className="absolute -right-4 top-5 rotate-3 rounded-sm bg-[#fff1b8] px-4 py-2 text-[11px] font-semibold text-[#6b4050] shadow-lg">Keep showing up ✦</div>
+      <div className="glass-panel relative z-10 overflow-hidden rounded-2xl sm:rounded-[2rem] border-orange-200/15 bg-[linear-gradient(120deg,rgba(91,35,65,.7),rgba(30,41,79,.55))] p-4 sm:p-6 lg:p-8">
+        <div className="absolute -right-4 top-5 rotate-3 rounded-sm bg-[#fff1b8] px-3 sm:px-4 py-1.5 sm:py-2 text-[10px] sm:text-[11px] font-semibold text-[#6b4050] shadow-lg">Keep showing up ✦</div>
         <button
           onClick={() => navigate("/streaks")}
           className="text-xs text-[#60a5fa] hover:text-[#93c5fd] transition block mb-4"
@@ -254,7 +254,7 @@ export default function StreakGroupDetailPage() {
             <span className="text-xs uppercase font-semibold text-[#38bdf8] tracking-wider">
               Streak Group
             </span>
-            <h1 className="mt-1 font-serif text-3xl font-semibold tracking-tight text-[#fff1d6] capitalize lg:text-4xl">
+            <h1 className="mt-1 font-serif text-2xl sm:text-3xl font-semibold tracking-tight text-[#fff1d6] capitalize lg:text-4xl">
               {group.name}
             </h1>
             <p className="text-zinc-400 text-sm mt-1">

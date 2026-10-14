@@ -34,7 +34,7 @@ export default function TaskList({ tasks, categories, projects, onSave, onDelete
 
   return (
     <>
-      <section className="rounded-2xl border border-white/[0.06] bg-[#111114] p-6">
+      <section className="rounded-2xl border border-white/[0.06] bg-[#111114] p-4 sm:p-6">
         <div className="flex items-start justify-between">
           <div>
             <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-600">
@@ -61,7 +61,7 @@ export default function TaskList({ tasks, categories, projects, onSave, onDelete
         </div>
 
         {tasks.length === 0 ? (
-          <div className="mt-8 rounded-xl border border-dashed border-white/[0.08] p-8 text-center">
+          <div className="mt-8 rounded-xl border border-dashed border-white/[0.08] p-5 sm:p-8 text-center">
             <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-white/[0.04]">
               <Sparkles size={14} className="text-zinc-300" />
             </div>

@@ -1,3 +1,38 @@
 import { Menu, Sparkles } from "lucide-react";
 import { Link } from "react-router-dom";
-export default function Topbar() { return <header className="flex h-[72px] items-center justify-between border-b border-white/[.06] px-5 lg:px-8"><Link to="/" className="flex items-center gap-2 lg:hidden"><span className="grid h-8 w-8 place-items-center rounded-lg bg-violet-400 text-zinc-950"><Sparkles size={15}/></span><b className="text-sm text-white">Tiny Wins</b></Link><p className="hidden text-sm text-zinc-500 sm:block">One focused action at a time.</p><button className="rounded-xl p-2 text-zinc-500 hover:bg-white/[.05] hover:text-white lg:hidden" aria-label="Open navigation"><Menu size={20}/></button></header>; }
+
+interface TopbarProps {
+  onOpenMenu?: () => void;
+}
+
+export default function Topbar({ onOpenMenu }: TopbarProps) {
+  return (
+    <header className="sticky top-0 z-30 flex h-14 sm:h-16 lg:h-[72px] items-center justify-between border-b border-white/[.06] bg-[#050816]/80 px-4 backdrop-blur-xl sm:px-6 lg:px-8">
+      {/* Mobile brand logo */}
+      <Link to="/" className="flex items-center gap-2.5 lg:hidden">
+        <span className="grid h-8 w-8 place-items-center rounded-xl bg-[#1e3a8a]/60 text-[#60a5fa] shadow-sm">
+          <Sparkles size={16} />
+        </span>
+        <div className="flex flex-col">
+          <b className="text-sm font-semibold text-white">Tiny Wins</b>
+          <span className="text-[10px] text-slate-400 -mt-0.5">Focus daily</span>
+        </div>
+      </Link>
+
+      {/* Desktop tagline */}
+      <p className="hidden text-xs sm:text-sm text-slate-400 sm:block">
+        One focused action at a time.
+      </p>
+
+      {/* Mobile hamburger menu toggle */}
+      <button
+        type="button"
+        onClick={onOpenMenu}
+        className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-400 transition hover:bg-white/[.06] hover:text-white active:scale-95 lg:hidden"
+        aria-label="Open navigation menu"
+      >
+        <Menu size={22} />
+      </button>
+    </header>
+  );
+}
