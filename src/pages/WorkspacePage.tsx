@@ -1,10 +1,23 @@
 import heroBg from "../assets/heropage.jpeg.jpg";
 import { useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { BookOpen, Check, Clock3, Flame, FolderPlus, Heart, Plus, Star, Timer, TrendingUp } from "lucide-react";
 import { useTasks } from "../hooks/useTasks";
 import { useAuth } from "../context/AuthContext";
 import TaskList from "../components/tasks/TaskList";
 import type { Task, TaskInput } from "../types/task";
+import {
+  getLocalDateKey,
+  getCompletedDates,
+  calculateActiveStreak,
+  getCurrentWeekDays,
+  getReclaimedMinutes,
+  formatMinutesToHours,
+  recordCompletionToday,
+  type WeekDayInfo,
+} from "../lib/streakUtils";
+import MomentumGraph from "../components/dashboard/MomentumGraph";
+import FocusModeWidget from "../components/dashboard/FocusModeWidget";
 
 interface DailyFocus {
   deepWork: string;
@@ -35,7 +48,7 @@ const readDailyFocus = (): DailyFocus => {
 };
 
 const dateKey = (d: Date | number = new Date()) =>
-  new Date(d).toLocaleDateString("en-CA");
+  getLocalDateKey(d);
 const niceDate = (date: string) =>
   new Date(`${date}T12:00:00`).toLocaleDateString(undefined, {
     weekday: "long",
@@ -98,6 +111,8 @@ export default function WorkspacePage({
     useTasks(session?.user.id);
   const [selected, setSelected] = useState(dateKey());
   const [completedFilter, setCompletedFilter] = useState("all");
+  const [reclaimedMinutes, setReclaimedMinutes] = useState<number>(getReclaimedMinutes);
+
   const today = dateKey();
   const list = useMemo(() => {
     if (view === "completed") return tasks.filter((t) => t.completed);
@@ -107,22 +122,22 @@ export default function WorkspacePage({
     if (view === "calendar") return tasks.filter((t) => t.dueDate === selected);
     return tasks.filter((t) => t.dueDate === today);
   }, [tasks, view, selected, today]);
+
   const completed = tasks.filter((t) => t.completed).length;
-  const streak = [
-    ...new Set(
-      tasks.filter((t) => t.completed).map((t) => t.updatedAt.slice(0, 10)),
-    ),
-  ]
-    .sort()
-    .reduce(
-      (count, day, index, dates) =>
-        index &&
-        dates[index - 1] ===
-          dateKey(new Date(`${day}T12:00:00`).getTime() - 86400000)
-          ? count + 1
-          : 1,
-      0,
-    );
+
+  // Real-time automatic streak and daily week calculation
+  const completedDates = useMemo(() => getCompletedDates(tasks), [tasks]);
+  const streak = useMemo(() => calculateActiveStreak(completedDates), [completedDates]);
+  const weekDaysInfo = useMemo(() => getCurrentWeekDays(completedDates), [completedDates]);
+
+  // Hook toggle to record completion date in real-time
+  const handleToggle = async (task: Task) => {
+    if (!task.completed) {
+      recordCompletionToday();
+    }
+    await toggle(task);
+  };
+
   if (loading)
     return <div className="p-8 text-zinc-500">Loading your workspace…</div>;
   if (view === "dashboard")
@@ -132,9 +147,12 @@ export default function WorkspacePage({
         categories={categories}
         projects={projects}
         streak={streak}
+        weekDaysInfo={weekDaysInfo}
+        reclaimedMinutes={reclaimedMinutes}
+        setReclaimedMinutes={setReclaimedMinutes}
         save={save}
         remove={remove}
-        toggle={toggle}
+        toggle={handleToggle}
       />
     );
   if (view === "analytics")
@@ -150,6 +168,14 @@ export default function WorkspacePage({
           <Card
             label="Completion rate"
             value={`${tasks.length ? Math.round((completed / tasks.length) * 100) : 0}%`}
+          />
+        </div>
+        <div className="mt-6">
+          <MomentumGraph
+            tasks={tasks}
+            variant="analytics"
+            title="Weekly & Monthly Momentum"
+            subtitle="Track habit trajectory, daily completion volume, and zero-day dips."
           />
         </div>
         <div className="mt-6 rounded-2xl border border-white/[.07] bg-white/[.025] p-6">
@@ -183,20 +209,43 @@ export default function WorkspacePage({
       <section className="p-3.5 sm:p-5 lg:p-8">
         <h1 className="text-2xl sm:text-3xl font-semibold text-white">Streaks</h1>
         <div className="mt-7 grid max-w-xl gap-4 sm:grid-cols-2">
-          <Card label="Current activity" value={`${streak} days`} />
+          <Card label="Current activity" value={`${streak} ${streak === 1 ? "day" : "days"}`} />
           <Card
             label="Completed today"
             value={
-              tasks.some(
-                (t) => t.completed && t.updatedAt.slice(0, 10) === today,
-              )
-                ? "Yes"
+              weekDaysInfo.find((d) => d.isToday)?.isCompleted
+                ? "Yes ✓"
                 : "Not yet"
             }
           />
         </div>
+        <div className="mt-6 max-w-xl rounded-2xl border border-white/[.07] bg-white/[.025] p-5">
+          <p className="text-xs uppercase tracking-wider text-zinc-400">This Week's Activity</p>
+          <div className="mt-4 flex items-center justify-between gap-2">
+            {weekDaysInfo.map((day) => (
+              <div key={day.date} className="flex flex-col items-center gap-1.5">
+                <span
+                  className={`grid h-9 w-9 place-items-center rounded-full text-xs font-semibold transition-all ${
+                    day.isCompleted
+                      ? "bg-gradient-to-tr from-amber-400 to-orange-400 text-slate-950 shadow-md shadow-orange-500/30"
+                      : day.isToday
+                      ? "border-2 border-amber-400 bg-amber-400/15 text-amber-200 ring-2 ring-amber-400/30"
+                      : "bg-white/5 text-slate-500"
+                  }`}
+                  title={`${day.dayName} (${day.date}): ${day.isCompleted ? "Completed" : day.isToday ? "Today" : "No task"}`}
+                >
+                  {day.dayLetter}
+                </span>
+                <span className="text-[10px] text-zinc-400">{day.dayName}</span>
+                {day.isToday && (
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
         <p className="mt-6 text-zinc-500">
-          A day counts when you complete at least one task.
+          A day counts automatically when you complete at least one tiny win or task.
         </p>
       </section>
     );
@@ -266,6 +315,9 @@ function Dashboard({
   categories,
   projects,
   streak,
+  weekDaysInfo,
+  reclaimedMinutes,
+  setReclaimedMinutes,
   save,
   remove,
   toggle,
@@ -274,15 +326,21 @@ function Dashboard({
   categories: ReturnType<typeof useTasks>["categories"];
   projects: ReturnType<typeof useTasks>["projects"];
   streak: number;
+  weekDaysInfo: WeekDayInfo[];
+  reclaimedMinutes: number;
+  setReclaimedMinutes: React.Dispatch<React.SetStateAction<number>>;
   save: ReturnType<typeof useTasks>["save"];
   remove: ReturnType<typeof useTasks>["remove"];
   toggle: ReturnType<typeof useTasks>["toggle"];
 }) {
+  const navigate = useNavigate();
   const today = dateKey();
   const todayTasks = tasks.filter((task) => task.dueDate === today);
   const [isAddWinModalOpen, setIsAddWinModalOpen] = useState(false);
   const [winInput, setWinInput] = useState("");
   const [isPlanDayModalOpen, setIsPlanDayModalOpen] = useState(false);
+  const [isReflectionOpen, setIsReflectionOpen] = useState(false);
+  const [reflectionText, setReflectionText] = useState("");
   const [dailyFocus, setDailyFocus] = useState<DailyFocus>(readDailyFocus);
   const [deepWorkInput, setDeepWorkInput] = useState("");
   const [healthInput, setHealthInput] = useState("");
@@ -349,7 +407,6 @@ function Dashboard({
     }
   };
   const completedCount = todayTasks.filter((task) => task.completed).length;
-  const weekDays = ["M", "T", "W", "T", "F", "S", "S"];
   const categoryStyles: Record<string, string> = {
     Personal: "bg-orange-400/15 text-orange-300",
     Study: "bg-blue-400/15 text-blue-300",
@@ -433,6 +490,39 @@ function Dashboard({
         </div>
       )}
 
+      {isReflectionOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm" onMouseDown={(event) => event.target === event.currentTarget && setIsReflectionOpen(false)}>
+          <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border border-white/10 bg-[#111525]/95 p-5 sm:p-6 shadow-2xl shadow-black/40">
+            <p className="text-xs uppercase tracking-[.18em] text-cyan-300">Journal & Reflection</p>
+            <h2 className="mt-2 text-xl font-semibold text-white">Daily Reflection</h2>
+            <p className="mt-1 text-xs text-slate-400">Capture what went well today and clear your mind.</p>
+            <textarea
+              autoFocus
+              value={reflectionText}
+              onChange={(e) => setReflectionText(e.target.value)}
+              placeholder="What went well today? What tiny win felt good?"
+              rows={5}
+              className="mt-4 w-full rounded-xl border border-white/10 bg-white/5 p-3.5 text-sm text-white placeholder:text-slate-500 outline-none focus:border-cyan-300/60"
+            />
+            <div className="mt-6 flex justify-end gap-3">
+              <button type="button" onClick={() => setIsReflectionOpen(false)} className="rounded-xl px-4 py-2 text-sm text-slate-300 hover:bg-white/5">Close</button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (reflectionText.trim()) {
+                    localStorage.setItem(`tiny_wins_reflection_${today}`, reflectionText.trim());
+                  }
+                  setIsReflectionOpen(false);
+                }}
+                className="rounded-xl bg-cyan-300 px-4 py-2 text-sm font-semibold text-[#10253b]"
+              >
+                Save reflection
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="mt-5 sm:mt-6 grid gap-3 sm:gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <div className="interactive-card glass-panel relative overflow-hidden rounded-2xl bg-[linear-gradient(145deg,rgba(96,165,250,.2),rgba(15,23,42,.7))] p-4 sm:p-5">
           <div className="flex items-center justify-between"><p className="text-xs font-semibold uppercase tracking-widest text-slate-300">Today&apos;s progress</p><span className="text-xl">⚡</span></div>
@@ -440,14 +530,93 @@ function Dashboard({
           <div className="mt-4 inline-flex rounded-full bg-sky-300/15 px-3 py-1 text-xs text-sky-200">🌱 You&apos;re doing great!</div>
         </div>
         <div className="interactive-card glass-panel rounded-2xl p-4 sm:p-5"><div className="flex items-center justify-between"><p className="text-xs font-semibold uppercase tracking-widest text-slate-300">Tiny wins today</p><span className="text-xl">⏱</span></div><p className="mt-3 sm:mt-4 text-2xl sm:text-3xl font-bold text-white">{completedCount} <span className="text-base sm:text-lg text-slate-500">/ {todayTasks.length || 6}</span></p><div className="mt-4 flex gap-2">{Array.from({ length: 6 }).map((_, index) => <span key={index} className={`h-2.5 w-2.5 rounded-full ${index < completedCount ? "bg-orange-300 shadow-lg shadow-orange-300/50" : "bg-white/10"}`} />)}</div><p className="mt-4 text-xs leading-5 text-slate-400">{Math.max(0, 6 - completedCount)} more and you&apos;ll complete today&apos;s tiny wins! Keep going! 👑</p></div>
-        <div className="interactive-card glass-panel rounded-2xl bg-[linear-gradient(145deg,rgba(251,146,60,.16),rgba(15,23,42,.72))] p-4 sm:p-5"><div className="flex items-center justify-between"><p className="text-xs font-semibold uppercase tracking-widest text-slate-300">Current streak</p><span className="animate-pulse text-xl">🔥</span></div><p className="mt-3 sm:mt-4 text-2xl sm:text-3xl font-bold text-orange-200">{streak} days</p><div className="mt-4 flex gap-1.5 sm:gap-2">{weekDays.map((day, index) => <span key={`${day}-${index}`} className={`grid h-7 w-7 place-items-center rounded-full text-[10px] ${index < Math.min(streak, 7) ? "bg-orange-300/20 text-orange-200" : "bg-white/5 text-slate-600"}`}>{day}</span>)}</div><p className="mt-4 text-xs text-slate-400">You&apos;re building something incredible.</p></div>
-        <div className="interactive-card glass-panel rounded-2xl bg-[linear-gradient(145deg,rgba(30,41,79,.75),rgba(3,7,18,.8))] p-4 sm:p-5"><div className="flex items-center justify-between"><p className="text-xs font-semibold uppercase tracking-widest text-slate-300">Time reclaimed</p><Clock3 className="text-indigo-300" size={18} /></div><p className="mt-3 sm:mt-4 text-2xl sm:text-3xl font-bold text-white">2h 15m</p><div className="mt-3 flex h-12 items-end gap-2">{[24, 38, 28, 44, 34, 52, 42].map((height, index) => <span key={index} className="flex-1 rounded-t bg-indigo-300/50" style={{ height: `${height}%` }} />)}</div><p className="mt-3 text-xs text-slate-400">More time for what matters.</p></div>
+        <div className="interactive-card glass-panel rounded-2xl bg-[linear-gradient(145deg,rgba(251,146,60,.16),rgba(15,23,42,.72))] p-4 sm:p-5">
+          <div className="flex items-center justify-between"><p className="text-xs font-semibold uppercase tracking-widest text-slate-300">Current streak</p><span className="animate-pulse text-xl">🔥</span></div>
+          <p className="mt-3 sm:mt-4 text-2xl sm:text-3xl font-bold text-orange-200">{streak} {streak === 1 ? "day" : "days"}</p>
+          <div className="mt-4 flex gap-1.5 sm:gap-2">
+            {weekDaysInfo.map((day) => (
+              <div key={day.date} className="flex flex-col items-center gap-1">
+                <span
+                  className={`grid h-7 w-7 place-items-center rounded-full text-[10px] font-semibold transition-all ${
+                    day.isCompleted
+                      ? "bg-gradient-to-tr from-amber-400 to-orange-400 text-slate-950 shadow-md shadow-orange-500/40"
+                      : day.isToday
+                      ? "border border-amber-400/80 bg-amber-400/15 text-amber-200 ring-2 ring-amber-400/30 font-bold"
+                      : "bg-white/5 text-slate-500"
+                  }`}
+                  title={`${day.dayName} (${day.date}): ${day.isCompleted ? "Completed" : day.isToday ? "Today" : "No activity"}`}
+                >
+                  {day.dayLetter}
+                </span>
+                {day.isToday && <span className="h-1 w-1 rounded-full bg-amber-400" />}
+              </div>
+            ))}
+          </div>
+          <p className="mt-4 text-xs text-slate-400">
+            {weekDaysInfo.find((d) => d.isToday)?.isCompleted
+              ? "Today's win completed! Flame burning bright. 🔥"
+              : "Complete a win today to keep your streak alive."}
+          </p>
+        </div>
+        <div className="interactive-card glass-panel rounded-2xl bg-[linear-gradient(145deg,rgba(30,41,79,.75),rgba(3,7,18,.8))] p-4 sm:p-5">
+          <div className="flex items-center justify-between"><p className="text-xs font-semibold uppercase tracking-widest text-slate-300">Time reclaimed</p><Clock3 className="text-indigo-300" size={18} /></div>
+          <p className="mt-3 sm:mt-4 text-2xl sm:text-3xl font-bold text-white">{formatMinutesToHours(reclaimedMinutes)}</p>
+          <div className="mt-3 flex h-12 items-end gap-2">
+            {[24, 38, 28, 44, 34, 52, 42].map((height, index) => <span key={index} className="flex-1 rounded-t bg-indigo-300/50" style={{ height: `${height}%` }} />)}
+          </div>
+          <p className="mt-3 text-xs text-slate-400">More time for what matters.</p>
+        </div>
       </div>
 
       <div className="mt-5 sm:mt-6 grid gap-4 sm:gap-5 xl:grid-cols-[1.25fr_1fr_.8fr]">
         <div className="glass-panel rounded-2xl p-4 sm:p-6"><div className="flex items-center justify-between"><div><p className="text-xs uppercase tracking-[.18em] text-orange-300">Today&apos;s Tasks</p><h2 className="mt-2 text-xl font-semibold text-white">Make it count</h2></div><span className="text-xs text-slate-500">{completedCount}/{todayTasks.length || 0}</span></div><div className="mt-5 space-y-2">{todayTasks.slice(0, 5).map((task) => <div key={task.id} className="flex items-center gap-3 rounded-xl border border-white/[.06] bg-white/[.025] p-3"><button onClick={() => void toggle(task)} aria-label={`Mark ${task.title} ${task.completed ? "active" : "complete"}`} className={`grid h-5 w-5 shrink-0 place-items-center rounded-md border ${task.completed ? "border-emerald-300 bg-emerald-300 text-[#18223b]" : "border-white/20 text-transparent"}`}>{task.completed && <Check size={13} />}</button><span className={`min-w-0 flex-1 truncate text-sm ${task.completed ? "text-slate-500 line-through" : "text-slate-200"}`}>{task.title}</span><span className={`hidden rounded-full px-2 py-1 text-[10px] font-medium sm:inline ${categoryStyles[task.category] || "bg-slate-400/10 text-slate-300"}`}>{task.category}</span><span className="text-[10px] text-slate-500">{task.dueTime || "15m"}</span><Star size={15} className="text-orange-200/70" /></div>)}{!todayTasks.length && <div className="rounded-xl border border-dashed border-orange-200/20 p-6 text-center"><Heart className="mx-auto text-rose-300" size={22} /><p className="mt-2 text-sm text-slate-300">Your first tiny win is waiting.</p><button onClick={openAddTask} className="mt-3 rounded-lg bg-orange-300 px-3 py-2 text-xs font-semibold text-[#3b233a]">Add a win</button></div>}</div><div className="mt-4"><TaskList tasks={todayTasks.slice(0, 3)} categories={categories} projects={projects} onSave={save} onDelete={remove} onToggle={toggle} title="Today's focus" /></div></div>
-        <div className="rounded-2xl bg-[#fffaf1] p-4 sm:p-6 text-[#35415e] shadow-xl shadow-black/10"><div className="flex items-center justify-between"><div><p className="text-xs font-semibold uppercase tracking-[.18em] text-[#c88766]">Weekly momentum</p><h2 className="mt-2 text-lg sm:text-xl font-semibold">Consistency, softly built.</h2></div><TrendingUp size={20} className="text-[#e39a76]" /></div><div className="mt-6 sm:mt-8 flex h-28 sm:h-32 items-end gap-1.5 sm:gap-3">{[52, 72, 44, 84, 62, 92, 68].map((height, index) => <div key={index} className="flex flex-1 flex-col items-center gap-2"><div className={`w-full rounded-t-lg ${index === 5 ? "bg-[#e99b7d]" : "bg-[#b9c9dc]"}`} style={{ height: `${height}%` }} /><span className="text-[10px] text-[#8b96aa]">{weekDays[index]}</span></div>)}</div><div className="mt-6 sm:mt-7 grid grid-cols-3 gap-1 sm:gap-2 border-t border-[#eadfce] pt-4 text-center"><div><p className="text-base sm:text-lg font-semibold">6</p><p className="text-[10px] text-[#8b96aa]">Daily goals</p></div><div><p className="text-base sm:text-lg font-semibold">{streak}</p><p className="text-[10px] text-[#8b96aa]">Best streak</p></div><div><p className="text-base sm:text-lg font-semibold text-[#d98065]">+22%</p><p className="text-[10px] text-[#8b96aa]">Consistency</p></div></div><p className="mt-5 sm:mt-7 text-center font-serif text-xs sm:text-sm italic text-[#68748c]">Consistency over perfection. That&apos;s where real progress lives. 💕</p></div>
-        <div className="space-y-4 sm:space-y-5"><div className="glass-panel rounded-2xl p-4 sm:p-5"><div className="flex items-center gap-2"><Timer className="text-orange-300" size={18} /><h2 className="font-semibold text-white">Focus mode</h2></div><p className="mt-4 sm:mt-5 text-3xl sm:text-4xl font-semibold text-white">25 <span className="text-base text-slate-500">min</span></p><div className="mt-4 grid grid-cols-3 gap-2">{["25 min", "50 min", "Custom"].map((option) => <button key={option} className="rounded-lg border border-white/10 bg-white/[.04] px-2 py-2 text-[11px] text-slate-300 transition hover:border-orange-300/40 hover:text-orange-200 active:scale-95">{option}</button>)}</div><button className="mt-3 w-full rounded-lg bg-orange-300 py-2.5 text-sm font-semibold text-[#3b233a] shadow-lg shadow-orange-950/20 active:scale-98">Start focus</button></div><div className="glass-panel rounded-2xl p-4 sm:p-5"><h2 className="font-semibold text-white">Quick actions</h2><div className="mt-4 grid grid-cols-2 gap-2">{[[Plus, "New task"], [FolderPlus, "New project"], [BookOpen, "Journal"], [Flame, "Habit"]].map(([Icon, label]) => <button key={label as string} onClick={label === "New task" ? openAddTask : undefined} className="flex flex-col items-center gap-2 rounded-xl border border-white/[.07] bg-white/[.03] px-2 py-3 text-xs text-slate-400 transition hover:border-orange-300/30 hover:text-orange-200 active:scale-95"><Icon size={17} />{label as string}</button>)}</div></div></div>
+        
+        {/* Real Dynamic Weekly/Monthly Momentum Graph */}
+        <MomentumGraph tasks={tasks} variant="dashboard" />
+
+        <div className="space-y-4 sm:space-y-5">
+          {/* Functional Focus Mode Widget */}
+          <FocusModeWidget
+            onSessionComplete={(mins) => {
+              setReclaimedMinutes((prev) => prev + mins);
+            }}
+          />
+
+          {/* Functional Quick Actions */}
+          <div className="glass-panel rounded-2xl p-4 sm:p-5">
+            <h2 className="font-semibold text-white">Quick actions</h2>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button
+                onClick={openAddWinModal}
+                className="flex flex-col items-center gap-2 rounded-xl border border-white/[.07] bg-white/[.03] px-2 py-3 text-xs text-slate-400 transition hover:border-orange-300/30 hover:text-orange-200 active:scale-95"
+              >
+                <Plus size={17} className="text-orange-300" />
+                <span>New task</span>
+              </button>
+              <button
+                onClick={() => navigate("/projects")}
+                className="flex flex-col items-center gap-2 rounded-xl border border-white/[.07] bg-white/[.03] px-2 py-3 text-xs text-slate-400 transition hover:border-violet-300/30 hover:text-violet-200 active:scale-95"
+              >
+                <FolderPlus size={17} className="text-violet-300" />
+                <span>Projects</span>
+              </button>
+              <button
+                onClick={() => setIsReflectionOpen(true)}
+                className="flex flex-col items-center gap-2 rounded-xl border border-white/[.07] bg-white/[.03] px-2 py-3 text-xs text-slate-400 transition hover:border-cyan-300/30 hover:text-cyan-200 active:scale-95"
+              >
+                <BookOpen size={17} className="text-cyan-300" />
+                <span>Journal</span>
+              </button>
+              <button
+                onClick={() => navigate("/streaks")}
+                className="flex flex-col items-center gap-2 rounded-xl border border-white/[.07] bg-white/[.03] px-2 py-3 text-xs text-slate-400 transition hover:border-rose-300/30 hover:text-rose-200 active:scale-95"
+              >
+                <Flame size={17} className="text-rose-300" />
+                <span>Habit</span>
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
   );

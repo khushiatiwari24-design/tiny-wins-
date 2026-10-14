@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, Check, Clipboard, FileText, FolderOpen, Plus, Upload, Users, X } from "lucide-react";
+import { ArrowLeft, Check, Clipboard, FileText, FolderOpen, Lock, Plus, Upload, Users, X } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useTasks } from "../hooks/useTasks";
 import { requireSupabase } from "../lib/supabase";
 import type { Priority, TaskInput } from "../types/task";
+import ProtectedContentViewer from "../components/projects/ProtectedContentViewer";
 
 type Project = { id: string; title: string; description: string; type: string; join_code: string; owner_id: string; created_at: string };
 type Member = { user_id: string; role: string; joined_at: string; profile: { full_name: string; email: string } | null };
@@ -42,6 +43,7 @@ export default function ProjectDetailPage() {
   const [noteTitle, setNoteTitle] = useState("");
   const [noteContent, setNoteContent] = useState("");
   const [preview, setPreview] = useState<{ file: StoredFile; url: string } | null>(null);
+  const [viewingNote, setViewingNote] = useState<Note | null>(null);
 
   const projectTasks = useMemo(() => allTasks.filter(task => task.projectId === projectId), [allTasks, projectId]);
   const completedCount = projectTasks.filter(task => task.completed).length;
@@ -159,11 +161,30 @@ export default function ProjectDetailPage() {
       {activeTab === "Overview" && <Overview project={project} tasks={projectTasks} members={members} activity={activity} progress={progress} />}
       {activeTab === "Tasks" && <TaskSection tasks={projectTasks} categories={categories} currentUserId={session?.user.id} showForm={showTaskForm} setShowForm={setShowTaskForm} onSubmit={submitTask} saving={taskSaving} title={taskTitle} setTitle={setTaskTitle} description={taskDescription} setDescription={setTaskDescription} category={taskCategory} setCategory={setTaskCategory} priority={taskPriority} setPriority={setTaskPriority} dueDate={taskDueDate} setDueDate={setTaskDueDate} dueTime={taskDueTime} setDueTime={setTaskDueTime} onToggle={task => void toggle(task)} onDelete={task => void remove(task.id)} />}
       {activeTab === "Files" && <FilesSection files={files} uploading={uploading} onUpload={uploadFile} onOpen={file => void openFile(file)} />}
-      {activeTab === "Notes" && <NotesSection notes={notes} canAdd={Boolean(isOwner || profile?.role === "teacher")} showForm={showNoteForm} setShowForm={setShowNoteForm} title={noteTitle} setTitle={setNoteTitle} content={noteContent} setContent={setNoteContent} saving={noteSaving} onSubmit={submitNote} />}
+      {activeTab === "Notes" && <NotesSection notes={notes} canAdd={Boolean(isOwner || profile?.role === "teacher")} showForm={showNoteForm} setShowForm={setShowNoteForm} title={noteTitle} setTitle={setNoteTitle} content={noteContent} setContent={setNoteContent} saving={noteSaving} onSubmit={submitNote} onViewNote={note => setViewingNote(note)} />}
       {activeTab === "Members" && <MembersSection members={members} ownerId={project.owner_id} />}
       {activeTab === "Activity" && <ActivitySection activity={activity} />}
     </div>
-    {preview && <FilePreview file={preview.file} url={preview.url} onClose={() => setPreview(null)} />}
+    {preview && (
+      <ProtectedContentViewer
+        title={preview.file.name}
+        type="file"
+        fileUrl={preview.url}
+        fileMimeType={fileMimeType(preview.file)}
+        createdAt={preview.file.created_at ? formatDate(preview.file.created_at) : undefined}
+        onClose={() => setPreview(null)}
+      />
+    )}
+    {viewingNote && (
+      <ProtectedContentViewer
+        title={viewingNote.title}
+        type="note"
+        content={viewingNote.content}
+        authorName={viewingNote.author?.full_name || "Project member"}
+        createdAt={formatDate(viewingNote.created_at)}
+        onClose={() => setViewingNote(null)}
+      />
+    )}
   </section>;
 }
 
@@ -182,6 +203,6 @@ function FilesSection({ files, uploading, onUpload, onOpen }: { files: StoredFil
 
 function FilePreview({ file, url, onClose }: { file: StoredFile; url: string; onClose: () => void }) { const mimeType = fileMimeType(file); return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={`Preview ${file.name}`} onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><div className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-white/[.1] bg-[#111114] shadow-2xl"><div className="flex items-center gap-4 border-b border-white/[.08] px-5 py-4"><FileText size={18} className="text-cyan-300" /><p className="min-w-0 flex-1 truncate text-sm text-white">{file.name}</p><button onClick={onClose} className="button p-2" aria-label="Close preview"><X size={16} /></button></div><div className="min-h-0 overflow-auto bg-black/30 p-4">{isImageFile(file) ? <img src={url} alt={file.name} className="mx-auto max-h-[72vh] max-w-full object-contain" /> : isPdfFile(file) ? <iframe src={url} title={file.name} className="h-[72vh] w-full rounded-lg bg-white" /> : mimeType.startsWith("audio/") ? <audio src={url} controls className="mx-auto mt-16 w-full max-w-xl" /> : mimeType.startsWith("video/") ? <video src={url} controls className="mx-auto max-h-[72vh] max-w-full" /> : <iframe src={url} title={file.name} className="h-[72vh] w-full rounded-lg bg-white" />}</div></div></div>; }
 
-function NotesSection({ notes, canAdd, showForm, setShowForm, title, setTitle, content, setContent, saving, onSubmit }: { notes: Note[]; canAdd: boolean; showForm: boolean; setShowForm: (value: boolean) => void; title: string; setTitle: (value: string) => void; content: string; setContent: (value: string) => void; saving: boolean; onSubmit: (event: React.FormEvent) => void }) { return <div><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs uppercase tracking-[.16em] text-zinc-600">Project notes</p><h2 className="mt-2 text-2xl font-medium text-white">Keep the context close</h2></div>{canAdd && <button onClick={() => setShowForm(!showForm)} className="button inline-flex items-center gap-2 bg-violet-400 text-zinc-950"><Plus size={16} /> Add note</button>}</div>{showForm && <form onSubmit={onSubmit} className="mt-5 rounded-2xl border border-violet-300/20 bg-violet-300/[.06] p-5"><input className="field" required placeholder="Note title" value={title} onChange={event => setTitle(event.target.value)} /><textarea className="field mt-3 min-h-32" required placeholder="Write a useful note..." value={content} onChange={event => setContent(event.target.value)} /><div className="mt-4 flex gap-2"><button disabled={saving} className="button bg-white text-zinc-950 disabled:opacity-50">{saving ? "Saving..." : "Save note"}</button><button type="button" onClick={() => setShowForm(false)} className="button">Cancel</button></div></form>}<div className="mt-5 grid gap-4 md:grid-cols-2">{notes.length ? notes.map(note => <article key={note.id} className="rounded-2xl border border-white/[.07] bg-white/[.035] p-5"><h3 className="font-medium text-white">{note.title}</h3><p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-zinc-400">{note.content}</p><p className="mt-5 text-xs text-zinc-600">{note.author?.full_name || "Project member"} · {formatDate(note.created_at)}</p></article>) : <div className="rounded-2xl border border-dashed border-white/[.1] px-6 py-12 text-center md:col-span-2"><FileText className="mx-auto text-zinc-700" size={26} /><p className="mt-3 text-sm text-zinc-500">No notes have been added yet.</p></div>}</div></div>; }
+function NotesSection({ notes, canAdd, showForm, setShowForm, title, setTitle, content, setContent, saving, onSubmit, onViewNote }: { notes: Note[]; canAdd: boolean; showForm: boolean; setShowForm: (value: boolean) => void; title: string; setTitle: (value: string) => void; content: string; setContent: (value: string) => void; saving: boolean; onSubmit: (event: React.FormEvent) => void; onViewNote: (note: Note) => void }) { return <div><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs uppercase tracking-[.16em] text-zinc-600">Project notes</p><h2 className="mt-2 text-2xl font-medium text-white">Keep the context close</h2></div>{canAdd && <button onClick={() => setShowForm(!showForm)} className="button inline-flex items-center gap-2 bg-violet-400 text-zinc-950"><Plus size={16} /> Add note</button>}</div>{showForm && <form onSubmit={onSubmit} className="mt-5 rounded-2xl border border-violet-300/20 bg-violet-300/[.06] p-5"><input className="field" required placeholder="Note title" value={title} onChange={event => setTitle(event.target.value)} /><textarea className="field mt-3 min-h-32" required placeholder="Write a useful note..." value={content} onChange={event => setContent(event.target.value)} /><div className="mt-4 flex gap-2"><button disabled={saving} className="button bg-white text-zinc-950 disabled:opacity-50">{saving ? "Saving..." : "Save note"}</button><button type="button" onClick={() => setShowForm(false)} className="button">Cancel</button></div></form>}<div className="mt-5 grid gap-4 md:grid-cols-2">{notes.length ? notes.map(note => <article key={note.id} className="group relative rounded-2xl border border-white/[.07] bg-white/[.035] p-5 transition hover:border-violet-400/40 hover:bg-white/[.05]"><div className="flex items-start justify-between gap-2"><h3 className="font-medium text-white">{note.title}</h3><button onClick={() => onViewNote(note)} className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-2 py-1 text-[11px] font-medium text-cyan-200 transition hover:bg-cyan-400/20" title="Open protected viewer"><Lock size={11} /> Protected View</button></div><p className="mt-3 line-clamp-4 whitespace-pre-wrap text-sm leading-6 text-zinc-400">{note.content}</p><div className="mt-5 flex items-center justify-between text-xs text-zinc-600"><span>{note.author?.full_name || "Project member"} · {formatDate(note.created_at)}</span><span className="text-[11px] text-zinc-500">Anti-screenshot protected</span></div></article>) : <div className="rounded-2xl border border-dashed border-white/[.1] px-6 py-12 text-center md:col-span-2"><FileText className="mx-auto text-zinc-700" size={26} /><p className="mt-3 text-sm text-zinc-500">No notes have been added yet.</p></div>}</div></div>; }
 
 function MembersSection({ members, ownerId }: { members: Member[]; ownerId: string }) { return <div><p className="text-xs uppercase tracking-[.16em] text-zinc-600">Project members</p><h2 className="mt-2 text-2xl font-medium text-white">People in this workspace</h2><div className="mt-5 space-y-2">{members.map(member => <div key={member.user_id} className="flex items-center gap-4 rounded-xl border border-white/[.07] bg-white/[.035] p-4"><span className="grid h-10 w-10 place-items-center rounded-full bg-violet-300/10 text-sm text-violet-200">{(member.profile?.full_name || "U").slice(0, 1).toUpperCase()}</span><div className="min-w-0 flex-1"><p className="text-sm text-zinc-200">{member.profile?.full_name || "Project member"}</p><p className="truncate text-xs text-zinc-600">{member.profile?.email || "Email unavailable"}</p></div><span className="text-right text-xs capitalize text-zinc-500">{member.user_id === ownerId ? "Owner" : member.role}<br /><span className="text-zinc-700">Joined {formatDate(member.joined_at)}</span></span></div>)}{!members.length && <p className="text-sm text-zinc-600">No member records are available.</p>}</div></div>; }
