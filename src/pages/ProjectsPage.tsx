@@ -39,19 +39,91 @@ export default function ProjectsPage() {
 
 	const join = async (event: React.FormEvent) => {
 		event.preventDefault();
-		if (saving) return;
-		setSaving(true); setMessage("");
-		const { data, error } = await requireSupabase().from("projects").select("id").eq("join_code", code.trim().toUpperCase()).single();
-		if (error || !data) { setSaving(false); setMessage(error ? `That join code was not found: ${error.message}` : "That join code was not found."); return; }
-		const { error: joinError } = await requireSupabase().from("project_members").upsert({ project_id: data.id, user_id: session!.user.id, role: "student" }, { onConflict: "project_id,user_id" });
-		setSaving(false); setMessage(joinError ? `Unable to join this project: ${joinError.message}` : "You joined the project.");
-		if (!joinError) { setCode(""); void load(); }
+		const rawCode = code.trim();
+		if (saving || !rawCode) return;
+		setSaving(true);
+		setMessage("");
+
+		const cleanCode = rawCode.toUpperCase();
+		const strippedCode = cleanCode.replace(/-/g, "");
+
+		try {
+			// 1. Try secure RPC join_project_by_code (bypasses RLS safely via SECURITY DEFINER)
+			const { data: rpcData, error: rpcError } = await requireSupabase().rpc("join_project_by_code", {
+				code_input: cleanCode,
+			});
+
+			if (!rpcError && rpcData) {
+				setSaving(false);
+				if (rpcData.success) {
+					setCode("");
+					setMessage(rpcData.message || "You joined the project!");
+					void load();
+				} else {
+					setMessage(rpcData.message || "That join code was not found. Please double-check the code.");
+				}
+				return;
+			}
+
+			// 2. Fallback: direct table lookup with .maybeSingle() (never throws PGRST116 single coerce error)
+			let { data: projectData, error: projError } = await requireSupabase()
+				.from("projects")
+				.select("id, title, join_code")
+				.ilike("join_code", cleanCode)
+				.maybeSingle();
+
+			// If not found and user typed without hyphen, try matching candidates
+			if (!projectData && !cleanCode.includes("-")) {
+				const { data: allCandidates } = await requireSupabase()
+					.from("projects")
+					.select("id, title, join_code");
+
+				if (allCandidates) {
+					projectData =
+						allCandidates.find(
+							(p) => (p.join_code || "").replace(/-/g, "").toUpperCase() === strippedCode
+						) || null;
+				}
+			}
+
+			if (projError) {
+				setSaving(false);
+				setMessage("Unable to find project with that code. Please verify the code.");
+				return;
+			}
+
+			if (!projectData) {
+				setSaving(false);
+				setMessage("That join code was not found. Please verify the code with your project owner.");
+				return;
+			}
+
+			// 3. Insert membership
+			const { error: joinError } = await requireSupabase()
+				.from("project_members")
+				.upsert(
+					{ project_id: projectData.id, user_id: session!.user.id, role: "student" },
+					{ onConflict: "project_id,user_id" }
+				);
+
+			setSaving(false);
+			if (joinError) {
+				setMessage(`Unable to join this project: ${joinError.message}`);
+			} else {
+				setCode("");
+				setMessage(`Successfully joined "${projectData.title}"!`);
+				void load();
+			}
+		} catch (err: any) {
+			setSaving(false);
+			setMessage(err?.message || "An unexpected error occurred. Please try again.");
+		}
 	};
 
 	return <section className="min-h-full bg-[radial-gradient(circle_at_top_right,rgba(34,211,238,.08),transparent_35%),radial-gradient(circle_at_top_left,rgba(139,92,246,.1),transparent_32%)] p-3.5 sm:p-5 lg:p-8">
 		<div className="flex flex-wrap items-end justify-between gap-4"><div><p className="flex items-center gap-2 text-xs font-medium uppercase tracking-[.18em] text-violet-300"><FolderKanban size={14} /> Shared focus</p><h1 className="mt-2 sm:mt-3 text-2xl sm:text-4xl font-semibold tracking-tight text-white">Projects</h1><p className="mt-1 sm:mt-2 max-w-xl text-xs sm:text-sm text-zinc-500">A calmer home for the work you are building together.</p></div><div className="rounded-full border border-white/[.08] bg-white/[.04] px-3.5 py-1.5 sm:px-4 sm:py-2 text-xs sm:text-sm text-zinc-300"><Users size={15} className="mr-2 inline text-cyan-300" />{projects.length} {projects.length === 1 ? "project" : "projects"}</div></div>
 		{message && <p className="mt-4 sm:mt-5 rounded-xl border border-violet-300/20 bg-violet-300/10 px-4 py-3 text-sm text-violet-100">{message}</p>}
-		<div className="mt-6 sm:mt-8 grid gap-4 sm:gap-5 lg:grid-cols-2"><form onSubmit={create} className="rounded-2xl border border-white/[.08] bg-white/[.04] p-4 sm:p-6 shadow-2xl shadow-violet-950/10"><p className="text-xs uppercase tracking-[.16em] text-zinc-500">Start fresh</p><h2 className="mt-2 text-lg font-medium text-white">Create a project</h2><input className="field mt-4 sm:mt-5" required placeholder="Project title" value={title} onChange={event => setTitle(event.target.value)} /><textarea className="field mt-3 min-h-24" placeholder="Description" value={description} onChange={event => setDescription(event.target.value)} /><button disabled={saving} className="button mt-4 inline-flex items-center gap-2 bg-violet-400 text-zinc-950 font-medium disabled:cursor-not-allowed disabled:opacity-50"><Plus size={16} />{saving ? "Saving..." : "Create project"}</button></form>{profile?.role === "student" && <form onSubmit={join} className="rounded-2xl border border-white/[.08] bg-white/[.04] p-4 sm:p-6"><p className="text-xs uppercase tracking-[.16em] text-zinc-500">Have an invitation?</p><h2 className="mt-2 text-lg font-medium text-white">Join a class</h2><input className="field mt-4 sm:mt-5" required placeholder="MATH-4821" value={code} onChange={event => setCode(event.target.value)} /><button disabled={saving} className="button mt-4 font-medium disabled:cursor-not-allowed disabled:opacity-50">{saving ? "Joining..." : "Join with code"}</button></form>}</div>
+		<div className="mt-6 sm:mt-8 grid gap-4 sm:gap-5 lg:grid-cols-2"><form onSubmit={create} className="rounded-2xl border border-white/[.08] bg-white/[.04] p-4 sm:p-6 shadow-2xl shadow-violet-950/10"><p className="text-xs uppercase tracking-[.16em] text-zinc-500">Start fresh</p><h2 className="mt-2 text-lg font-medium text-white">Create a project</h2><input className="field mt-4 sm:mt-5" required placeholder="Project title" value={title} onChange={event => setTitle(event.target.value)} /><textarea className="field mt-3 min-h-24" placeholder="Description" value={description} onChange={event => setDescription(event.target.value)} /><button disabled={saving} className="button mt-4 inline-flex items-center gap-2 bg-violet-400 text-zinc-950 font-medium disabled:cursor-not-allowed disabled:opacity-50"><Plus size={16} />{saving ? "Saving..." : "Create project"}</button></form><form onSubmit={join} className="rounded-2xl border border-white/[.08] bg-white/[.04] p-4 sm:p-6 shadow-2xl shadow-violet-950/10"><p className="text-xs uppercase tracking-[.16em] text-zinc-500">Have an invitation?</p><h2 className="mt-2 text-lg font-medium text-white">Join with code</h2><input className="field mt-4 sm:mt-5" required placeholder="e.g. MATH-4821" value={code} onChange={event => setCode(event.target.value)} /><button disabled={saving} className="button mt-4 font-medium disabled:cursor-not-allowed disabled:opacity-50">{saving ? "Joining..." : "Join with code"}</button></form></div>
 		{loading ? <p className="mt-10 text-sm text-zinc-500">Loading your projects...</p> : projects.length === 0 ? <div className="mt-8 rounded-2xl border border-dashed border-white/[.12] px-6 py-14 text-center"><FolderKanban className="mx-auto text-zinc-600" size={30} /><h2 className="mt-4 text-lg text-white">Your next tiny win starts here</h2><p className="mt-2 text-sm text-zinc-500">Create a project or join one with a code.</p></div> : <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-3">{projects.map(project => <Link key={project.id} to={`/projects/${project.id}`} className="group rounded-2xl border border-white/[.08] bg-white/[.035] p-5 transition duration-200 hover:-translate-y-1 hover:border-cyan-300/30 hover:bg-white/[.06] hover:shadow-xl hover:shadow-cyan-950/20"><div className="flex items-start justify-between gap-4"><span className="rounded-full bg-cyan-300/10 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[.14em] text-cyan-200">{project.type}</span><ArrowUpRight size={18} className="text-zinc-600 transition group-hover:text-cyan-200" /></div><h2 className="mt-5 text-xl font-medium text-white">{project.title}</h2><p className="mt-2 min-h-10 text-sm leading-6 text-zinc-500">{project.description || "No description yet."}</p>{project.owner_id === session?.user.id && <p className="mt-5 text-xs text-zinc-500">Join code: <span className="select-all text-violet-200">{project.join_code}</span></p>}<span className="mt-5 inline-flex items-center gap-2 text-sm font-medium text-zinc-300 transition group-hover:text-white">Open Project <ArrowUpRight size={14} /></span></Link>)}</div>}
 	</section>;
 }
