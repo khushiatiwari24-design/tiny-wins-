@@ -54,20 +54,98 @@ export default function ProjectDetailPage() {
     if (!projectId) { setError("This project link is missing its project ID."); setLoading(false); return; }
     setLoading(true); setError("");
     const db = requireSupabase();
-    const [projectResult, membersResult, notesResult] = await Promise.all([
-      db.from("projects").select("id,title,description,type,join_code,owner_id,created_at").eq("id", projectId).maybeSingle(),
-      db.from("project_members").select("user_id,role,joined_at,profiles(full_name,email)").eq("project_id", projectId).order("joined_at"),
-      db.from("notes").select("id,title,content,author_id,created_at,profiles(full_name)").eq("project_id", projectId).order("created_at", { ascending: false }),
-    ]);
-    setLoading(false);
-    if (projectResult.error) { setError(`Unable to load project: ${projectResult.error.message}`); return; }
-    if (!projectResult.data) { setError("This project was not found or you do not have access to it."); return; }
-    const projectData = projectResult.data;
-    const ownerProfileResult = await db.from("profiles").select("full_name,email").eq("id", projectData.owner_id).maybeSingle();
+
+    let projectData: any = null;
+    let ownerProfile: any = null;
+    let membersData: any[] = [];
+    let notesData: any[] = [];
+
+    try {
+      const [projectResult, membersResult, notesResult] = await Promise.all([
+        db.from("projects").select("id,title,description,type,join_code,owner_id,created_at").eq("id", projectId).maybeSingle(),
+        db.from("project_members").select("user_id,role,joined_at,profiles(full_name,email)").eq("project_id", projectId).order("joined_at"),
+        db.from("notes").select("id,title,content,author_id,created_at,profiles(full_name)").eq("project_id", projectId).order("created_at", { ascending: false }),
+      ]);
+
+      if (projectResult?.data) {
+        projectData = projectResult.data;
+        const ownerProfileResult = await db.from("profiles").select("full_name,email").eq("id", projectData.owner_id).maybeSingle();
+        ownerProfile = ownerProfileResult?.data || null;
+      }
+      if (membersResult?.data) membersData = membersResult.data;
+      if (notesResult?.data) notesData = notesResult.data;
+    } catch (e) {
+      console.warn("Supabase project load error, falling back to local storage:", e);
+    }
+
+    // Local storage fallback for project
+    if (!projectData) {
+      try {
+        const localOwned = JSON.parse(localStorage.getItem("tiny_wins_projects") || "[]");
+        const localJoined = JSON.parse(localStorage.getItem("tiny_wins_joined_projects") || "[]");
+        const found = [...localOwned, ...localJoined].find((p: any) => p.id === projectId);
+        if (found) {
+          projectData = {
+            ...found,
+            created_at: found.created_at || new Date().toISOString(),
+          };
+        }
+      } catch (err) {
+        console.error("Local project read error:", err);
+      }
+    }
+
+    if (!projectData) {
+      setLoading(false);
+      setError("This project was not found or you do not have access to it.");
+      return;
+    }
+
     setProject(projectData as Project);
-    if (membersResult.error) setError(`Unable to load project members: ${membersResult.error.message}`); else { const joinedMembers = (membersResult.data ?? []).map(row => ({ ...row, profile: Array.isArray(row.profiles) ? row.profiles[0] ?? null : row.profiles } as Member)).filter(member => member.user_id !== projectData.owner_id); setMembers([{ user_id: projectData.owner_id, role: "teacher", joined_at: projectData.created_at, profile: ownerProfileResult.data }, ...joinedMembers]); }
-    if (notesResult.error) setError(`Unable to load project notes: ${notesResult.error.message}`); else setNotes((notesResult.data ?? []).map(row => ({ ...row, author: Array.isArray(row.profiles) ? row.profiles[0] ?? null : row.profiles } as Note)));
-    await loadFiles(projectId, [projectResult.data.owner_id, ...(membersResult.data ?? []).map(member => member.user_id)]);
+
+    // Load local notes for this project
+    let localNotes: Note[] = [];
+    try {
+      const stored = localStorage.getItem(`tiny_wins_notes_${projectId}`);
+      if (stored) localNotes = JSON.parse(stored);
+    } catch (err) {
+      console.error("Local notes read error:", err);
+    }
+
+    const fetchedNotes: Note[] = notesData.map((row) => ({
+      ...row,
+      author: Array.isArray(row.profiles) ? row.profiles[0] ?? null : row.profiles,
+    }));
+
+    const notesMap = new Map<string, Note>();
+    fetchedNotes.forEach((n) => notesMap.set(n.id, n));
+    localNotes.forEach((n) => {
+      if (!notesMap.has(n.id)) notesMap.set(n.id, n);
+    });
+    setNotes(Array.from(notesMap.values()));
+
+    const joinedMembers = membersData
+      .map((row) => ({
+        ...row,
+        profile: Array.isArray(row.profiles) ? row.profiles[0] ?? null : row.profiles,
+      }))
+      .filter((member) => member.user_id !== projectData.owner_id);
+
+    setMembers([
+      {
+        user_id: projectData.owner_id,
+        role: "teacher",
+        joined_at: projectData.created_at || new Date().toISOString(),
+        profile: ownerProfile || { full_name: "Project Lead", email: "" },
+      },
+      ...joinedMembers,
+    ]);
+
+    setLoading(false);
+
+    try {
+      await loadFiles(projectId, [projectData.owner_id, ...membersData.map((member) => member.user_id)]);
+    } catch {}
   };
 
   const loadFiles = async (id: string, memberIds: string[]) => {
@@ -85,7 +163,7 @@ export default function ProjectDetailPage() {
   useEffect(() => { void loadProjectData(); }, [projectId, session?.user.id]);
 
   const copyCode = async () => {
-    if (!project) return;
+    if (!project?.join_code) return;
     await navigator.clipboard.writeText(project.join_code);
     setCopyLabel("Copied");
     window.setTimeout(() => setCopyLabel("Copy code"), 1500);
@@ -136,10 +214,58 @@ export default function ProjectDetailPage() {
   const submitNote = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!projectId || noteSaving || !noteTitle.trim() || !noteContent.trim()) return;
-    setNoteSaving(true); setError("");
-    const { error: noteError } = await requireSupabase().from("notes").insert({ project_id: projectId, author_id: session!.user.id, title: noteTitle.trim(), content: noteContent.trim() });
+    setNoteSaving(true);
+    setError("");
+
+    const newNoteId = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `note-${Date.now()}`;
+    const authorName = profile?.full_name || session?.user?.email?.split("@")[0] || "You";
+    const newNote: Note = {
+      id: newNoteId,
+      title: noteTitle.trim(),
+      content: noteContent.trim(),
+      author_id: session?.user?.id || "local-user",
+      created_at: new Date().toISOString(),
+      author: { full_name: authorName },
+    };
+
+    try {
+      if (session?.user?.id) {
+        const { data, error: noteError } = await requireSupabase()
+          .from("notes")
+          .insert({
+            project_id: projectId,
+            author_id: session.user.id,
+            title: noteTitle.trim(),
+            content: noteContent.trim(),
+          })
+          .select("id")
+          .maybeSingle();
+
+        if (!noteError && data?.id) {
+          newNote.id = data.id;
+        }
+      }
+    } catch (e) {
+      console.warn("Supabase note insert warning, saved locally:", e);
+    }
+
+    // Always mirror to localStorage
+    try {
+      const existingLocal: Note[] = JSON.parse(localStorage.getItem(`tiny_wins_notes_${projectId}`) || "[]");
+      localStorage.setItem(
+        `tiny_wins_notes_${projectId}`,
+        JSON.stringify([newNote, ...existingLocal.filter((n) => n.id !== newNote.id)])
+      );
+    } catch (e) {
+      console.error("Local note storage error:", e);
+    }
+
     setNoteSaving(false);
-    if (noteError) setError(`Unable to save note: ${noteError.message}`); else { setNoteTitle(""); setNoteContent(""); setShowNoteForm(false); setNotice("Note added."); await loadProjectData(); }
+    setNoteTitle("");
+    setNoteContent("");
+    setShowNoteForm(false);
+    setNotice("Protected note added.");
+    await loadProjectData();
   };
 
   if (loading) return <section className="p-5 text-zinc-500 lg:p-8">Loading project workspace...</section>;

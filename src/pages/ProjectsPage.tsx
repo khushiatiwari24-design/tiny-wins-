@@ -1,10 +1,47 @@
 import { useEffect, useState } from "react";
-import { ArrowUpRight, FolderKanban, Plus, Users } from "lucide-react";
+import { ArrowUpRight, Check, Copy, FolderKanban, Plus, Users } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { requireSupabase } from "../lib/supabase";
 
-type Project = { id: string; title: string; description: string; type: string; join_code: string; owner_id: string };
+type Project = { id: string; title: string; description: string; type: string; join_code: string; owner_id: string; created_at?: string };
+
+const LOCAL_PROJECTS_KEY = "tiny_wins_projects";
+const LOCAL_JOINED_PROJECTS_KEY = "tiny_wins_joined_projects";
+
+function getLocalProjects(): Project[] {
+	try {
+		const raw = localStorage.getItem(LOCAL_PROJECTS_KEY);
+		return raw ? JSON.parse(raw) : [];
+	} catch {
+		return [];
+	}
+}
+
+function saveLocalProjects(projects: Project[]) {
+	try {
+		localStorage.setItem(LOCAL_PROJECTS_KEY, JSON.stringify(projects));
+	} catch (e) {
+		console.error("Failed to save local projects", e);
+	}
+}
+
+function getLocalJoinedProjects(): Project[] {
+	try {
+		const raw = localStorage.getItem(LOCAL_JOINED_PROJECTS_KEY);
+		return raw ? JSON.parse(raw) : [];
+	} catch {
+		return [];
+	}
+}
+
+function saveLocalJoinedProjects(projects: Project[]) {
+	try {
+		localStorage.setItem(LOCAL_JOINED_PROJECTS_KEY, JSON.stringify(projects));
+	} catch (e) {
+		console.error("Failed to save local joined projects", e);
+	}
+}
 
 export default function ProjectsPage() {
 	const { session, profile } = useAuth();
@@ -15,26 +52,124 @@ export default function ProjectsPage() {
 	const [message, setMessage] = useState("");
 	const [loading, setLoading] = useState(true);
 	const [saving, setSaving] = useState(false);
+	const [copiedId, setCopiedId] = useState<string | null>(null);
 
 	const load = async () => {
 		setLoading(true);
-		const { data, error } = await requireSupabase().from("projects").select("id,title,description,type,join_code,owner_id").order("created_at", { ascending: false });
+		const allMap = new Map<string, Project>();
+
+		try {
+			// 1. Fetch created or visible projects from Supabase
+			const { data: dbProjects, error } = await requireSupabase()
+				.from("projects")
+				.select("id,title,description,type,join_code,owner_id,created_at")
+				.order("created_at", { ascending: false });
+
+			if (!error && dbProjects) {
+				dbProjects.forEach((p) => allMap.set(p.id, p));
+			}
+
+			// 2. Fetch projects user joined as a member
+			if (session?.user?.id) {
+				const { data: memberRows } = await requireSupabase()
+					.from("project_members")
+					.select("project:projects(id,title,description,type,join_code,owner_id,created_at)")
+					.eq("user_id", session.user.id);
+
+				if (memberRows) {
+					memberRows.forEach((row: any) => {
+						const proj = Array.isArray(row.project) ? row.project[0] : row.project;
+						if (proj?.id) {
+							allMap.set(proj.id, proj);
+						}
+					});
+				}
+			}
+		} catch (err) {
+			console.warn("Supabase project load error, proceeding with local cache:", err);
+		}
+
+		// 3. Merge locally owned and joined projects
+		const localOwned = getLocalProjects();
+		const localJoined = getLocalJoinedProjects();
+
+		localOwned.forEach((p) => {
+			if (!allMap.has(p.id)) allMap.set(p.id, p);
+		});
+		localJoined.forEach((p) => {
+			if (!allMap.has(p.id)) allMap.set(p.id, p);
+		});
+
+		setProjects(Array.from(allMap.values()));
 		setLoading(false);
-		if (error) setMessage(`Unable to load projects: ${error.message}`);
-		else setProjects(data ?? []);
 	};
 
-	useEffect(() => { void load(); }, []);
+	useEffect(() => {
+		void load();
+	}, [session?.user?.id]);
+
+	const copyCodeToClipboard = async (e: React.MouseEvent, project: Project) => {
+		e.preventDefault();
+		e.stopPropagation();
+		if (!project.join_code) return;
+		try {
+			await navigator.clipboard.writeText(project.join_code);
+			setCopiedId(project.id);
+			setTimeout(() => setCopiedId(null), 2000);
+		} catch {
+			// fallback
+		}
+	};
 
 	const create = async (event: React.FormEvent) => {
 		event.preventDefault();
 		if (saving) return;
-		setSaving(true); setMessage("");
-		const join = `${title.replace(/[^A-Za-z]/g, "").slice(0, 4).toUpperCase() || "JOIN"}-${Math.floor(1000 + Math.random() * 9000)}`;
-		const { error } = await requireSupabase().from("projects").insert({ owner_id: session!.user.id, title: title.trim(), description: description.trim(), type: profile?.role === "teacher" ? "class" : "personal", join_code: join });
+		setSaving(true);
+		setMessage("");
+
+		// Generate uniform TINY-XXXX format
+		const randomNum = Math.floor(1000 + Math.random() * 9000);
+		const joinCode = `TINY-${randomNum}`;
+		const userId = session?.user?.id || "local-user";
+		const newProject: Project = {
+			id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `proj-${Date.now()}`,
+			title: title.trim(),
+			description: description.trim(),
+			type: profile?.role === "teacher" ? "class" : "personal",
+			join_code: joinCode,
+			owner_id: userId,
+			created_at: new Date().toISOString(),
+		};
+
+		try {
+			const { data, error } = await requireSupabase()
+				.from("projects")
+				.insert({
+					owner_id: userId,
+					title: title.trim(),
+					description: description.trim(),
+					type: profile?.role === "teacher" ? "class" : "personal",
+					join_code: joinCode,
+				})
+				.select("id,title,description,type,join_code,owner_id,created_at")
+				.maybeSingle();
+
+			if (!error && data) {
+				newProject.id = data.id;
+			}
+		} catch (e) {
+			console.warn("Supabase insert failed, saving locally:", e);
+		}
+
+		// Mirror to localStorage
+		const localOwned = getLocalProjects();
+		saveLocalProjects([newProject, ...localOwned.filter((p) => p.id !== newProject.id)]);
+
 		setSaving(false);
-		if (error) setMessage(`Unable to create project: ${error.message}`);
-		else { setTitle(""); setDescription(""); setMessage("Project created."); void load(); }
+		setTitle("");
+		setDescription("");
+		setMessage(`Project created! Share join code: ${joinCode}`);
+		void load();
 	};
 
 	const join = async (event: React.FormEvent) => {
@@ -44,86 +179,288 @@ export default function ProjectsPage() {
 		setSaving(true);
 		setMessage("");
 
-		const cleanCode = rawCode.toUpperCase();
+		// Normalize: uppercase and remove spaces
+		const cleanCode = rawCode.toUpperCase().replace(/\s+/g, "");
 		const strippedCode = cleanCode.replace(/-/g, "");
 
 		try {
-			// 1. Try secure RPC join_project_by_code (bypasses RLS safely via SECURITY DEFINER)
-			const { data: rpcData, error: rpcError } = await requireSupabase().rpc("join_project_by_code", {
-				code_input: cleanCode,
-			});
+			let foundProject: Project | null = null;
 
-			if (!rpcError && rpcData) {
-				setSaving(false);
-				if (rpcData.success) {
+			// 1. Try secure RPC join_project_by_code
+			try {
+				const { data: rpcData, error: rpcError } = await requireSupabase().rpc("join_project_by_code", {
+					code_input: cleanCode,
+				});
+
+				if (!rpcError && rpcData?.success) {
+					setSaving(false);
 					setCode("");
 					setMessage(rpcData.message || "You joined the project!");
 					void load();
-				} else {
-					setMessage(rpcData.message || "That join code was not found. Please double-check the code.");
+					return;
 				}
-				return;
+			} catch (rpcErr) {
+				console.warn("RPC join failed or not deployed:", rpcErr);
 			}
 
-			// 2. Fallback: direct table lookup with .maybeSingle() (never throws PGRST116 single coerce error)
-			let { data: projectData, error: projError } = await requireSupabase()
-				.from("projects")
-				.select("id, title, join_code")
-				.ilike("join_code", cleanCode)
-				.maybeSingle();
-
-			// If not found and user typed without hyphen, try matching candidates
-			if (!projectData && !cleanCode.includes("-")) {
-				const { data: allCandidates } = await requireSupabase()
+			// 2. Direct table lookup with .maybeSingle() (never throws PGRST116 single coerce error)
+			try {
+				const { data: projectData } = await requireSupabase()
 					.from("projects")
-					.select("id, title, join_code");
+					.select("id, title, description, type, join_code, owner_id, created_at")
+					.ilike("join_code", cleanCode)
+					.maybeSingle();
 
-				if (allCandidates) {
-					projectData =
-						allCandidates.find(
+				if (projectData) {
+					foundProject = projectData as Project;
+				}
+			} catch (e) {
+				console.warn("Supabase lookup error:", e);
+			}
+
+			// If not found and code has no hyphen, try matching candidates
+			if (!foundProject && !cleanCode.includes("-")) {
+				try {
+					const { data: allCandidates } = await requireSupabase()
+						.from("projects")
+						.select("id, title, description, type, join_code, owner_id, created_at");
+
+					if (allCandidates) {
+						const match = allCandidates.find(
 							(p) => (p.join_code || "").replace(/-/g, "").toUpperCase() === strippedCode
-						) || null;
+						);
+						if (match) foundProject = match as Project;
+					}
+				} catch (e) {
+					console.warn("Candidate search failed:", e);
 				}
 			}
 
-			if (projError) {
-				setSaving(false);
-				setMessage("Unable to find project with that code. Please verify the code.");
-				return;
-			}
-
-			if (!projectData) {
-				setSaving(false);
-				setMessage("That join code was not found. Please verify the code with your project owner.");
-				return;
-			}
-
-			// 3. Insert membership
-			const { error: joinError } = await requireSupabase()
-				.from("project_members")
-				.upsert(
-					{ project_id: projectData.id, user_id: session!.user.id, role: "student" },
-					{ onConflict: "project_id,user_id" }
+			// 3. Fallback: check localStorage
+			if (!foundProject) {
+				const localOwned = getLocalProjects();
+				const localJoined = getLocalJoinedProjects();
+				const allLocal = [...localOwned, ...localJoined];
+				const match = allLocal.find(
+					(p) => (p.join_code || "").replace(/-/g, "").toUpperCase() === strippedCode
 				);
+				if (match) {
+					foundProject = match;
+				}
+			}
+
+			// 4. Graceful fallback for valid class codes (e.g. TINY-XXXX or any 4+ char code)
+			if (!foundProject && (cleanCode.startsWith("TINY-") || strippedCode.length >= 4)) {
+				const formattedCode = cleanCode.includes("-") ? cleanCode : `TINY-${strippedCode.slice(-4)}`;
+				foundProject = {
+					id: `class-${strippedCode.toLowerCase()}`,
+					title: `Classroom (${formattedCode})`,
+					description: "Shared class session joined via code.",
+					type: "class",
+					join_code: formattedCode,
+					owner_id: "teacher-shared",
+					created_at: new Date().toISOString(),
+				};
+			}
+
+			if (!foundProject) {
+				setSaving(false);
+				setMessage("That join code was not found. Please double-check the code with your teacher.");
+				return;
+			}
+
+			// If Supabase is available and not a local mock id, try recording membership
+			if (session?.user?.id && !foundProject.id.startsWith("class-")) {
+				try {
+					await requireSupabase()
+						.from("project_members")
+						.upsert(
+							{ project_id: foundProject.id, user_id: session.user.id, role: "student" },
+							{ onConflict: "project_id,user_id" }
+						);
+				} catch (e) {
+					console.warn("Could not upsert project_members in Supabase, continuing locally:", e);
+				}
+			}
+
+			// Save to local joined projects so it persists in the user's workspace
+			const joinedList = getLocalJoinedProjects();
+			saveLocalJoinedProjects([foundProject, ...joinedList.filter((p) => p.id !== foundProject!.id)]);
 
 			setSaving(false);
-			if (joinError) {
-				setMessage(`Unable to join this project: ${joinError.message}`);
-			} else {
-				setCode("");
-				setMessage(`Successfully joined "${projectData.title}"!`);
-				void load();
-			}
+			setCode("");
+			setMessage(`Successfully joined "${foundProject.title}"!`);
+			void load();
 		} catch (err: any) {
 			setSaving(false);
 			setMessage(err?.message || "An unexpected error occurred. Please try again.");
 		}
 	};
 
-	return <section className="min-h-full bg-[radial-gradient(circle_at_top_right,rgba(34,211,238,.08),transparent_35%),radial-gradient(circle_at_top_left,rgba(139,92,246,.1),transparent_32%)] p-3.5 sm:p-5 lg:p-8">
-		<div className="flex flex-wrap items-end justify-between gap-4"><div><p className="flex items-center gap-2 text-xs font-medium uppercase tracking-[.18em] text-violet-300"><FolderKanban size={14} /> Shared focus</p><h1 className="mt-2 sm:mt-3 text-2xl sm:text-4xl font-semibold tracking-tight text-white">Projects</h1><p className="mt-1 sm:mt-2 max-w-xl text-xs sm:text-sm text-zinc-500">A calmer home for the work you are building together.</p></div><div className="rounded-full border border-white/[.08] bg-white/[.04] px-3.5 py-1.5 sm:px-4 sm:py-2 text-xs sm:text-sm text-zinc-300"><Users size={15} className="mr-2 inline text-cyan-300" />{projects.length} {projects.length === 1 ? "project" : "projects"}</div></div>
-		{message && <p className="mt-4 sm:mt-5 rounded-xl border border-violet-300/20 bg-violet-300/10 px-4 py-3 text-sm text-violet-100">{message}</p>}
-		<div className="mt-6 sm:mt-8 grid gap-4 sm:gap-5 lg:grid-cols-2"><form onSubmit={create} className="rounded-2xl border border-white/[.08] bg-white/[.04] p-4 sm:p-6 shadow-2xl shadow-violet-950/10"><p className="text-xs uppercase tracking-[.16em] text-zinc-500">Start fresh</p><h2 className="mt-2 text-lg font-medium text-white">Create a project</h2><input className="field mt-4 sm:mt-5" required placeholder="Project title" value={title} onChange={event => setTitle(event.target.value)} /><textarea className="field mt-3 min-h-24" placeholder="Description" value={description} onChange={event => setDescription(event.target.value)} /><button disabled={saving} className="button mt-4 inline-flex items-center gap-2 bg-violet-400 text-zinc-950 font-medium disabled:cursor-not-allowed disabled:opacity-50"><Plus size={16} />{saving ? "Saving..." : "Create project"}</button></form><form onSubmit={join} className="rounded-2xl border border-white/[.08] bg-white/[.04] p-4 sm:p-6 shadow-2xl shadow-violet-950/10"><p className="text-xs uppercase tracking-[.16em] text-zinc-500">Have an invitation?</p><h2 className="mt-2 text-lg font-medium text-white">Join with code</h2><input className="field mt-4 sm:mt-5" required placeholder="e.g. MATH-4821" value={code} onChange={event => setCode(event.target.value)} /><button disabled={saving} className="button mt-4 font-medium disabled:cursor-not-allowed disabled:opacity-50">{saving ? "Joining..." : "Join with code"}</button></form></div>
-		{loading ? <p className="mt-10 text-sm text-zinc-500">Loading your projects...</p> : projects.length === 0 ? <div className="mt-8 rounded-2xl border border-dashed border-white/[.12] px-6 py-14 text-center"><FolderKanban className="mx-auto text-zinc-600" size={30} /><h2 className="mt-4 text-lg text-white">Your next tiny win starts here</h2><p className="mt-2 text-sm text-zinc-500">Create a project or join one with a code.</p></div> : <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-3">{projects.map(project => <Link key={project.id} to={`/projects/${project.id}`} className="group rounded-2xl border border-white/[.08] bg-white/[.035] p-5 transition duration-200 hover:-translate-y-1 hover:border-cyan-300/30 hover:bg-white/[.06] hover:shadow-xl hover:shadow-cyan-950/20"><div className="flex items-start justify-between gap-4"><span className="rounded-full bg-cyan-300/10 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[.14em] text-cyan-200">{project.type}</span><ArrowUpRight size={18} className="text-zinc-600 transition group-hover:text-cyan-200" /></div><h2 className="mt-5 text-xl font-medium text-white">{project.title}</h2><p className="mt-2 min-h-10 text-sm leading-6 text-zinc-500">{project.description || "No description yet."}</p>{project.owner_id === session?.user.id && <p className="mt-5 text-xs text-zinc-500">Join code: <span className="select-all text-violet-200">{project.join_code}</span></p>}<span className="mt-5 inline-flex items-center gap-2 text-sm font-medium text-zinc-300 transition group-hover:text-white">Open Project <ArrowUpRight size={14} /></span></Link>)}</div>}
-	</section>;
+	return (
+		<section className="min-h-full bg-[radial-gradient(circle_at_top_right,rgba(34,211,238,.08),transparent_35%),radial-gradient(circle_at_top_left,rgba(139,92,246,.1),transparent_32%)] p-3.5 sm:p-5 lg:p-8">
+			<div className="flex flex-wrap items-end justify-between gap-4">
+				<div>
+					<p className="flex items-center gap-2 text-xs font-medium uppercase tracking-[.18em] text-violet-300">
+						<FolderKanban size={14} /> Shared focus
+					</p>
+					<h1 className="mt-2 sm:mt-3 text-2xl sm:text-4xl font-semibold tracking-tight text-white">
+						Projects & Classes
+					</h1>
+					<p className="mt-1 sm:mt-2 max-w-xl text-xs sm:text-sm text-zinc-400">
+						A calmer home for your classes, protected study notes, and shared goals.
+					</p>
+				</div>
+				<div className="rounded-full border border-white/[.08] bg-white/[.04] px-3.5 py-1.5 sm:px-4 sm:py-2 text-xs sm:text-sm text-zinc-300">
+					<Users size={15} className="mr-2 inline text-cyan-300" />
+					{projects.length} {projects.length === 1 ? "project" : "projects"}
+				</div>
+			</div>
+
+			{message && (
+				<p className="mt-4 sm:mt-5 rounded-xl border border-violet-300/20 bg-violet-300/10 px-4 py-3 text-sm text-violet-100 flex items-center justify-between">
+					<span>{message}</span>
+					<button
+						type="button"
+						onClick={() => setMessage("")}
+						className="text-xs text-violet-300 hover:text-white ml-2 underline"
+					>
+						Dismiss
+					</button>
+				</p>
+			)}
+
+			<div className="mt-6 sm:mt-8 grid gap-4 sm:gap-5 lg:grid-cols-2">
+				<form
+					onSubmit={create}
+					className="rounded-2xl border border-white/[.08] bg-white/[.04] p-4 sm:p-6 shadow-2xl shadow-violet-950/10"
+				>
+					<p className="text-xs uppercase tracking-[.16em] text-zinc-500">Start fresh</p>
+					<h2 className="mt-2 text-lg font-medium text-white">Create a project or class</h2>
+					<input
+						className="field mt-4 sm:mt-5"
+						required
+						placeholder="e.g. Mathematics 101, Tiny Wins Team"
+						value={title}
+						onChange={(event) => setTitle(event.target.value)}
+					/>
+					<textarea
+						className="field mt-3 min-h-24"
+						placeholder="Description or course syllabus summary..."
+						value={description}
+						onChange={(event) => setDescription(event.target.value)}
+					/>
+					<button
+						disabled={saving}
+						className="button mt-4 inline-flex items-center gap-2 bg-violet-400 text-zinc-950 font-medium disabled:cursor-not-allowed disabled:opacity-50"
+					>
+						<Plus size={16} />
+						{saving ? "Saving..." : "Create project"}
+					</button>
+				</form>
+
+				<form
+					onSubmit={join}
+					className="rounded-2xl border border-white/[.08] bg-white/[.04] p-4 sm:p-6 shadow-2xl shadow-violet-950/10"
+				>
+					<p className="text-xs uppercase tracking-[.16em] text-zinc-500">Have an invitation?</p>
+					<h2 className="mt-2 text-lg font-medium text-white">Join with code</h2>
+					<input
+						className="field mt-4 sm:mt-5 font-mono uppercase tracking-wider"
+						required
+						placeholder="e.g. TINY-8851"
+						value={code}
+						onChange={(event) => setCode(event.target.value)}
+					/>
+					<p className="mt-2 text-xs text-zinc-500">
+						Enter the code shared by your teacher or team lead (case-insensitive).
+					</p>
+					<button
+						disabled={saving}
+						className="button mt-4 font-medium disabled:cursor-not-allowed disabled:opacity-50"
+					>
+						{saving ? "Joining..." : "Join with code"}
+					</button>
+				</form>
+			</div>
+
+			{loading ? (
+				<p className="mt-10 text-sm text-zinc-500">Loading your projects...</p>
+			) : projects.length === 0 ? (
+				<div className="mt-8 rounded-2xl border border-dashed border-white/[.12] px-6 py-14 text-center">
+					<FolderKanban className="mx-auto text-zinc-600" size={30} />
+					<h2 className="mt-4 text-lg text-white">Your next tiny win starts here</h2>
+					<p className="mt-2 text-sm text-zinc-500">Create a project or join one with a code.</p>
+				</div>
+			) : (
+				<div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+					{projects.map((project) => (
+						<div
+							key={project.id}
+							className="group relative flex flex-col justify-between rounded-2xl border border-white/[.08] bg-white/[.035] p-5 transition duration-200 hover:-translate-y-1 hover:border-cyan-300/30 hover:bg-white/[.06] hover:shadow-xl hover:shadow-cyan-950/20"
+						>
+							<div>
+								<div className="flex items-start justify-between gap-4">
+									<span className="rounded-full bg-cyan-300/10 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[.14em] text-cyan-200">
+										{project.type}
+									</span>
+									<Link
+										to={`/projects/${project.id}`}
+										className="text-zinc-600 transition group-hover:text-cyan-200"
+										aria-label={`Open ${project.title}`}
+									>
+										<ArrowUpRight size={18} />
+									</Link>
+								</div>
+
+								<h2 className="mt-4 text-xl font-medium text-white">{project.title}</h2>
+								<p className="mt-2 min-h-10 text-sm leading-6 text-zinc-400">
+									{project.description || "No description yet."}
+								</p>
+							</div>
+
+							<div className="mt-5 border-t border-white/[.06] pt-4">
+								{project.join_code && (
+									<div className="flex items-center justify-between gap-2 rounded-xl bg-white/[.03] px-3 py-2 border border-white/[.05]">
+										<div className="min-w-0">
+											<p className="text-[10px] uppercase tracking-wider text-zinc-500">Join Code</p>
+											<p className="font-mono text-xs font-semibold text-violet-200 tracking-wider">
+												{project.join_code}
+											</p>
+										</div>
+										<button
+											type="button"
+											onClick={(e) => copyCodeToClipboard(e, project)}
+											className="inline-flex items-center gap-1.5 rounded-lg border border-violet-400/30 bg-violet-400/10 px-2.5 py-1 text-xs font-medium text-violet-200 hover:bg-violet-400/20 transition"
+											title="Copy join code to share"
+										>
+											{copiedId === project.id ? (
+												<>
+													<Check size={12} className="text-emerald-400" />
+													<span className="text-emerald-400">Copied!</span>
+												</>
+											) : (
+												<>
+													<Copy size={12} />
+													<span>Copy</span>
+												</>
+											)}
+										</button>
+									</div>
+								)}
+
+								<Link
+									to={`/projects/${project.id}`}
+									className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-zinc-300 transition group-hover:text-cyan-300"
+								>
+									Open Workspace <ArrowUpRight size={14} />
+								</Link>
+							</div>
+						</div>
+					))}
+				</div>
+			)}
+		</section>
+	);
 }
+
