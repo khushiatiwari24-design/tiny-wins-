@@ -37,7 +37,7 @@ export default function ProtectedContentViewer({
 
   // Anti-Screenshot & Shortcut interception
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
+    const handleKeyIntercept = (e: KeyboardEvent) => {
       // Escape closes
       if (e.key === "Escape") {
         onClose();
@@ -47,47 +47,62 @@ export default function ProtectedContentViewer({
       // Check for PrintScreen
       if (e.key === "PrintScreen" || e.keyCode === 44) {
         e.preventDefault();
-        triggerViolation("Screen capture is disabled for protected material.");
+        e.stopPropagation();
+        triggerViolation("Screen capture is strictly disabled for protected study material.");
         return;
       }
 
-      // Ctrl+P (Print) or Cmd+P
+      // Ctrl+P / Cmd+P (Print)
       if ((e.ctrlKey || e.metaKey) && (e.key === "p" || e.key === "P")) {
         e.preventDefault();
-        triggerViolation("Printing is disabled for protected material.");
+        e.stopPropagation();
+        triggerViolation("Printing is disabled for protected study material.");
         return;
       }
 
-      // Ctrl+S (Save) or Cmd+S
+      // Ctrl+S / Cmd+S (Save)
       if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
         e.preventDefault();
-        triggerViolation("Downloading or saving files is prohibited.");
+        e.stopPropagation();
+        triggerViolation("Downloading or saving study material is prohibited.");
         return;
       }
 
-      // Ctrl+Shift+I or F12 (Inspect)
+      // F12 or Ctrl+Shift+I / Ctrl+Shift+C (DevTools inspect)
       if (
         e.key === "F12" ||
         ((e.ctrlKey || e.metaKey) &&
           e.shiftKey &&
-          (e.key === "I" || e.key === "i" || e.key === "C" || e.key === "c"))
+          (e.key === "I" || e.key === "i" || e.key === "C" || e.key === "c" || e.key === "J" || e.key === "j"))
       ) {
         e.preventDefault();
+        e.stopPropagation();
         triggerViolation("Developer tools inspection is disabled.");
         return;
       }
 
-      // Meta+Shift+S / Windows Snipping Tool key
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "S" || e.key === "s")) {
+      // Meta+Shift+S / Ctrl+Shift+S / Mac Screenshot 3, 4, 5
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        e.shiftKey &&
+        (e.key === "S" || e.key === "s" || e.key === "3" || e.key === "4" || e.key === "5")
+      ) {
         e.preventDefault();
-        triggerViolation("Snipping tool detected. Capture blocked.");
+        e.stopPropagation();
+        triggerViolation("Snipping & screenshot tools detected. Capture blocked.");
         return;
       }
     };
 
     const triggerViolation = (msg: string) => {
       setShortcutViolation(msg);
-      window.setTimeout(() => setShortcutViolation(null), 3500);
+      setIsWindowBlurred(true);
+      window.setTimeout(() => {
+        setShortcutViolation(null);
+        if (!document.hidden && document.hasFocus()) {
+          setIsWindowBlurred(false);
+        }
+      }, 4000);
     };
 
     // Window blur / Tab switch protection (triggers when user opens snipping tool or external overlay)
@@ -96,39 +111,59 @@ export default function ProtectedContentViewer({
     };
 
     const handleWindowFocus = () => {
-      setIsWindowBlurred(false);
+      if (!shortcutViolation) {
+        setIsWindowBlurred(false);
+      }
     };
 
     const handleVisibilityChange = () => {
       if (document.hidden) {
         setIsWindowBlurred(true);
-      } else {
+      } else if (document.hasFocus() && !shortcutViolation) {
         setIsWindowBlurred(false);
       }
     };
 
-    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keydown", handleKeyIntercept, true);
+    window.addEventListener("keyup", handleKeyIntercept, true);
     window.addEventListener("blur", handleWindowBlur);
     window.addEventListener("focus", handleWindowFocus);
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
-      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keydown", handleKeyIntercept, true);
+      window.removeEventListener("keyup", handleKeyIntercept, true);
       window.removeEventListener("blur", handleWindowBlur);
       window.removeEventListener("focus", handleWindowFocus);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [onClose]);
+  }, [onClose, shortcutViolation]);
 
   const isImage = fileMimeType?.startsWith("image/");
   const isPdf = fileMimeType === "application/pdf" || (!isImage && type === "file");
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-2 sm:p-4 backdrop-blur-md select-none"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-2 sm:p-4 backdrop-blur-md select-none"
       role="dialog"
       aria-modal="true"
+      style={{ userSelect: "none", WebkitUserSelect: "none" }}
       onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+      }}
+      onCopy={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+      }}
+      onCut={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+      }}
+      onDragStart={(e) => {
         e.preventDefault();
         return false;
       }}
@@ -150,7 +185,7 @@ export default function ProtectedContentViewer({
                 </span>
               </div>
               <p className="text-[11px] text-slate-400">
-                {type === "note" ? "Secure Study Note" : "Protected Document"}
+                {type === "note" ? "Secure Study Material" : "Protected Document"}
                 {authorName ? ` • By ${authorName}` : ""}
                 {createdAt ? ` • ${createdAt}` : ""}
               </p>
@@ -178,45 +213,55 @@ export default function ProtectedContentViewer({
         {/* Main Protected Content Area */}
         <div className="relative flex-1 overflow-auto bg-[#060814] p-4 sm:p-8">
           {/* Watermark Diagonal Overlay across the entire viewer */}
-          <div className="pointer-events-none absolute inset-0 z-20 flex flex-wrap items-center justify-around gap-20 overflow-hidden opacity-[0.06] select-none">
-            {Array.from({ length: 18 }).map((_, i) => (
+          <div className="pointer-events-none absolute inset-0 z-20 flex flex-wrap items-center justify-around gap-16 overflow-hidden opacity-[0.07] select-none">
+            {Array.from({ length: 24 }).map((_, i) => (
               <div
                 key={i}
-                className="-rotate-25 whitespace-nowrap text-sm sm:text-base font-mono font-bold uppercase tracking-widest text-white"
+                className="-rotate-25 whitespace-nowrap text-xs sm:text-sm font-mono font-bold uppercase tracking-widest text-cyan-200"
               >
-                {userName} • {userEmail} • {timestamp} • DO NOT COPY
+                {userName} • {userEmail} • {timestamp} • Protected • Tiny Wins
               </div>
             ))}
           </div>
 
           {/* Window Blur Shield Overlay (when user unfocuses or opens external snipping tool) */}
-          {isWindowBlurred && (
-            <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/90 p-6 text-center backdrop-blur-2xl">
-              <AlertTriangle size={36} className="text-amber-400 mb-3" />
-              <h3 className="text-lg font-bold text-white">Content Hidden</h3>
-              <p className="mt-1 text-xs sm:text-sm text-slate-400 max-w-md">
-                This study material is protected against screenshots and screen recording.
-                Please click back on this window to resume viewing.
+          {(isWindowBlurred || shortcutViolation) && (
+            <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/92 p-6 text-center backdrop-blur-2xl">
+              <div className="mb-4 grid h-14 w-14 place-items-center rounded-2xl bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                <AlertTriangle size={32} />
+              </div>
+              <h3 className="text-xl font-bold text-white tracking-tight">
+                🔒 Protected Study Material — Screenshots & Downloads are strictly disabled.
+              </h3>
+              <p className="mt-2 text-xs sm:text-sm text-slate-400 max-w-lg leading-relaxed">
+                This study material is view-only within Tiny Wins. Screen capture tools, snipping tools, and saving are prohibited to protect course intellectual property. Click back inside this window to resume reading.
               </p>
             </div>
           )}
 
-          {/* Actual Content */}
+          {/* Actual Content Container */}
           <div
-            className={`relative z-10 transition-all duration-300 ${
-              isWindowBlurred || shortcutViolation ? "blur-xl select-none pointer-events-none" : ""
-            }`}
+            className="relative z-10 transition-all duration-300"
+            style={
+              isWindowBlurred || shortcutViolation
+                ? { filter: "blur(28px) brightness(0.2)", userSelect: "none", pointerEvents: "none" }
+                : undefined
+            }
           >
             {type === "note" ? (
-              <div className="max-w-3xl mx-auto rounded-2xl bg-white/[.02] border border-white/[.06] p-6 sm:p-8">
+              <div className="max-w-3xl mx-auto rounded-2xl bg-white/[.02] border border-white/[.06] p-6 sm:p-8 shadow-xl">
                 <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-cyan-300 mb-4">
                   <FileText size={15} />
-                  <span>Confidential Course Note</span>
+                  <span>Confidential Course Study Material</span>
                 </div>
                 <h1 className="text-xl sm:text-2xl font-bold text-white mb-6">
                   {title}
                 </h1>
-                <div className="whitespace-pre-wrap font-sans text-sm sm:text-base leading-relaxed text-slate-200">
+                <div
+                  className="whitespace-pre-wrap font-sans text-sm sm:text-base leading-relaxed text-slate-200 select-none"
+                  style={{ userSelect: "none", WebkitUserSelect: "none" }}
+                  onContextMenu={(e) => e.preventDefault()}
+                >
                   {content || "No note content recorded."}
                 </div>
               </div>
@@ -228,14 +273,28 @@ export default function ProtectedContentViewer({
                     alt={title}
                     draggable={false}
                     className="max-h-[75vh] max-w-full rounded-xl object-contain shadow-2xl pointer-events-none select-none"
+                    style={{ userSelect: "none", WebkitUserSelect: "none" }}
                     onContextMenu={(e) => e.preventDefault()}
                   />
                 ) : isPdf ? (
-                  <iframe
-                    src={`${fileUrl}#toolbar=0&navpanes=0&scrollbar=0`}
-                    title={title}
-                    className="h-[75vh] w-full rounded-xl border border-white/10 bg-slate-900 shadow-2xl"
-                  />
+                  <div className="relative h-[75vh] w-full max-w-4xl rounded-xl overflow-hidden border border-white/10 bg-slate-900 shadow-2xl">
+                    {/* Transparent guard overlay blocking browser PDF toolbar buttons (Download, Print) */}
+                    <div
+                      className="absolute top-0 left-0 right-0 h-14 z-20 bg-transparent pointer-events-auto"
+                      title="Toolbar disabled for protected document"
+                      onContextMenu={(e) => e.preventDefault()}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                      }}
+                    />
+                    <iframe
+                      src={`${fileUrl}#toolbar=0&navpanes=0&scrollbar=0`}
+                      title={title}
+                      className="h-full w-full border-0 select-none"
+                      style={{ userSelect: "none" }}
+                    />
+                  </div>
                 ) : (
                   <div className="text-center p-8 text-slate-400">
                     <FileText size={48} className="mx-auto mb-3 text-cyan-300" />

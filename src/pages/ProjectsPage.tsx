@@ -1,10 +1,19 @@
 import { useEffect, useState } from "react";
-import { ArrowUpRight, Check, Copy, FolderKanban, Plus, Users } from "lucide-react";
+import { ArrowUpRight, Check, Copy, FolderKanban, LogOut, Plus, Trash2, Users } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { requireSupabase } from "../lib/supabase";
 
-type Project = { id: string; title: string; description: string; type: string; join_code: string; owner_id: string; created_at?: string };
+type Project = {
+	id: string;
+	title: string;
+	description: string;
+	type: string;
+	join_code: string;
+	owner_id: string;
+	created_at?: string;
+	materials?: any[];
+};
 
 const LOCAL_PROJECTS_KEY = "tiny_wins_projects";
 const LOCAL_JOINED_PROJECTS_KEY = "tiny_wins_joined_projects";
@@ -62,7 +71,7 @@ export default function ProjectsPage() {
 			// 1. Fetch created or visible projects from Supabase
 			const { data: dbProjects, error } = await requireSupabase()
 				.from("projects")
-				.select("id,title,description,type,join_code,owner_id,created_at")
+				.select("id,title,description,type,join_code,owner_id,created_at,materials")
 				.order("created_at", { ascending: false });
 
 			if (!error && dbProjects) {
@@ -73,7 +82,7 @@ export default function ProjectsPage() {
 			if (session?.user?.id) {
 				const { data: memberRows } = await requireSupabase()
 					.from("project_members")
-					.select("project:projects(id,title,description,type,join_code,owner_id,created_at)")
+					.select("project:projects(id,title,description,type,join_code,owner_id,created_at,materials)")
 					.eq("user_id", session.user.id);
 
 				if (memberRows) {
@@ -121,13 +130,65 @@ export default function ProjectsPage() {
 		}
 	};
 
+	const handleDeleteProject = async (e: React.MouseEvent, project: Project) => {
+		e.preventDefault();
+		e.stopPropagation();
+		const confirmed = window.confirm(
+			`Are you sure you want to delete "${project.title}"? This will permanently delete the project and all notes/materials.`
+		);
+		if (!confirmed) return;
+
+		try {
+			await requireSupabase().from("projects").delete().eq("id", project.id);
+		} catch (err) {
+			console.warn("Supabase project delete failed, proceeding locally:", err);
+		}
+
+		// Clean from local storage
+		const localOwned = getLocalProjects().filter((p) => p.id !== project.id);
+		saveLocalProjects(localOwned);
+		const localJoined = getLocalJoinedProjects().filter((p) => p.id !== project.id);
+		saveLocalJoinedProjects(localJoined);
+		localStorage.removeItem(`tiny_wins_notes_${project.id}`);
+
+		setProjects((prev) => prev.filter((p) => p.id !== project.id));
+		setMessage(`Deleted project "${project.title}".`);
+	};
+
+	const handleLeaveClass = async (e: React.MouseEvent, project: Project) => {
+		e.preventDefault();
+		e.stopPropagation();
+		const confirmed = window.confirm(
+			`Are you sure you want to leave "${project.title}"?`
+		);
+		if (!confirmed) return;
+
+		if (session?.user?.id) {
+			try {
+				await requireSupabase()
+					.from("project_members")
+					.delete()
+					.eq("project_id", project.id)
+					.eq("user_id", session.user.id);
+			} catch (err) {
+				console.warn("Supabase member delete failed, proceeding locally:", err);
+			}
+		}
+
+		const localJoined = getLocalJoinedProjects().filter((p) => p.id !== project.id);
+		saveLocalJoinedProjects(localJoined);
+
+		setProjects((prev) => prev.filter((p) => p.id !== project.id));
+		setMessage(`You have left "${project.title}".`);
+	};
+
 	const create = async (event: React.FormEvent) => {
 		event.preventDefault();
 		if (saving) return;
 		setSaving(true);
 		setMessage("");
 
-		// Generate uniform TINY-XXXX format
+		// Generate clean uniform TINY-XXXX code
 		const randomNum = Math.floor(1000 + Math.random() * 9000);
 		const joinCode = `TINY-${randomNum}`;
 		const userId = session?.user?.id || "local-user";
@@ -139,6 +200,7 @@ export default function ProjectsPage() {
 			join_code: joinCode,
 			owner_id: userId,
 			created_at: new Date().toISOString(),
+			materials: [],
 		};
 
 		try {
@@ -150,8 +212,9 @@ export default function ProjectsPage() {
 					description: description.trim(),
 					type: profile?.role === "teacher" ? "class" : "personal",
 					join_code: joinCode,
+					materials: [],
 				})
-				.select("id,title,description,type,join_code,owner_id,created_at")
+				.select("id,title,description,type,join_code,owner_id,created_at,materials")
 				.maybeSingle();
 
 			if (!error && data) {
@@ -186,44 +249,42 @@ export default function ProjectsPage() {
 		try {
 			let foundProject: Project | null = null;
 
-			// 1. Try secure RPC join_project_by_code
+			// 1. Try secure RPC join_project_by_code in Supabase
 			try {
 				const { data: rpcData, error: rpcError } = await requireSupabase().rpc("join_project_by_code", {
 					code_input: cleanCode,
 				});
 
-				if (!rpcError && rpcData?.success) {
-					setSaving(false);
-					setCode("");
-					setMessage(rpcData.message || "You joined the project!");
-					void load();
-					return;
+				if (!rpcError && rpcData?.success && rpcData?.project) {
+					foundProject = rpcData.project as Project;
 				}
 			} catch (rpcErr) {
-				console.warn("RPC join failed or not deployed:", rpcErr);
+				console.warn("RPC join failed, falling back to direct query:", rpcErr);
 			}
 
-			// 2. Direct table lookup with .maybeSingle() (never throws PGRST116 single coerce error)
-			try {
-				const { data: projectData } = await requireSupabase()
-					.from("projects")
-					.select("id, title, description, type, join_code, owner_id, created_at")
-					.ilike("join_code", cleanCode)
-					.maybeSingle();
+			// 2. Direct table lookup with .maybeSingle() in Supabase
+			if (!foundProject) {
+				try {
+					const { data: projectData } = await requireSupabase()
+						.from("projects")
+						.select("id, title, description, type, join_code, owner_id, created_at, materials")
+						.ilike("join_code", cleanCode)
+						.maybeSingle();
 
-				if (projectData) {
-					foundProject = projectData as Project;
+					if (projectData) {
+						foundProject = projectData as Project;
+					}
+				} catch (e) {
+					console.warn("Supabase direct lookup error:", e);
 				}
-			} catch (e) {
-				console.warn("Supabase lookup error:", e);
 			}
 
-			// If not found and code has no hyphen, try matching candidates
-			if (!foundProject && !cleanCode.includes("-")) {
+			// If not found and code has no hyphen, match stripped candidates from Supabase
+			if (!foundProject) {
 				try {
 					const { data: allCandidates } = await requireSupabase()
 						.from("projects")
-						.select("id, title, description, type, join_code, owner_id, created_at");
+						.select("id, title, description, type, join_code, owner_id, created_at, materials");
 
 					if (allCandidates) {
 						const match = allCandidates.find(
@@ -236,7 +297,7 @@ export default function ProjectsPage() {
 				}
 			}
 
-			// 3. Fallback: check localStorage
+			// 3. Fallback: check localStorage ONLY if already created locally on this browser
 			if (!foundProject) {
 				const localOwned = getLocalProjects();
 				const localJoined = getLocalJoinedProjects();
@@ -249,28 +310,17 @@ export default function ProjectsPage() {
 				}
 			}
 
-			// 4. Graceful fallback for valid class codes (e.g. TINY-XXXX or any 4+ char code)
-			if (!foundProject && (cleanCode.startsWith("TINY-") || strippedCode.length >= 4)) {
-				const formattedCode = cleanCode.includes("-") ? cleanCode : `TINY-${strippedCode.slice(-4)}`;
-				foundProject = {
-					id: `class-${strippedCode.toLowerCase()}`,
-					title: `Classroom (${formattedCode})`,
-					description: "Shared class session joined via code.",
-					type: "class",
-					join_code: formattedCode,
-					owner_id: "teacher-shared",
-					created_at: new Date().toISOString(),
-				};
-			}
-
+			// If still not found, do NOT create an empty dummy classroom!
 			if (!foundProject) {
 				setSaving(false);
-				setMessage("That join code was not found. Please double-check the code with your teacher.");
+				setMessage(
+					`Join code "${rawCode}" was not found. Please double-check the code with your teacher or project owner.`
+				);
 				return;
 			}
 
-			// If Supabase is available and not a local mock id, try recording membership
-			if (session?.user?.id && !foundProject.id.startsWith("class-")) {
+			// Record membership in Supabase
+			if (session?.user?.id) {
 				try {
 					await requireSupabase()
 						.from("project_members")
@@ -404,13 +454,36 @@ export default function ProjectsPage() {
 									<span className="rounded-full bg-cyan-300/10 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[.14em] text-cyan-200">
 										{project.type}
 									</span>
-									<Link
-										to={`/projects/${project.id}`}
-										className="text-zinc-600 transition group-hover:text-cyan-200"
-										aria-label={`Open ${project.title}`}
-									>
-										<ArrowUpRight size={18} />
-									</Link>
+									<div className="flex items-center gap-1.5">
+										{project.owner_id === session?.user?.id ? (
+											<button
+												type="button"
+												onClick={(e) => handleDeleteProject(e, project)}
+												className="rounded-lg p-1.5 text-zinc-500 hover:bg-rose-500/15 hover:text-rose-400 transition"
+												title="Delete project"
+												aria-label="Delete project"
+											>
+												<Trash2 size={16} />
+											</button>
+										) : (
+											<button
+												type="button"
+												onClick={(e) => handleLeaveClass(e, project)}
+												className="rounded-lg p-1.5 text-zinc-500 hover:bg-amber-500/15 hover:text-amber-400 transition"
+												title="Leave class"
+												aria-label="Leave class"
+											>
+												<LogOut size={16} />
+											</button>
+										)}
+										<Link
+											to={`/projects/${project.id}`}
+											className="rounded-lg p-1.5 text-zinc-500 hover:bg-white/[.08] hover:text-cyan-200 transition"
+											aria-label={`Open ${project.title}`}
+										>
+											<ArrowUpRight size={18} />
+										</Link>
+									</div>
 								</div>
 
 								<h2 className="mt-4 text-xl font-medium text-white">{project.title}</h2>

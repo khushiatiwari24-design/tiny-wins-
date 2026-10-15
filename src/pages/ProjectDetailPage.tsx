@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, Check, Clipboard, FileText, FolderOpen, Lock, Plus, Upload, Users, X } from "lucide-react";
-import { Link, useParams } from "react-router-dom";
+import { ArrowLeft, Check, Clipboard, FileText, FolderOpen, Lock, LogOut, Plus, RefreshCw, Trash2, Upload, Users, X } from "lucide-react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useTasks } from "../hooks/useTasks";
 import { requireSupabase } from "../lib/supabase";
 import type { Priority, TaskInput } from "../types/task";
 import ProtectedContentViewer from "../components/projects/ProtectedContentViewer";
 
-type Project = { id: string; title: string; description: string; type: string; join_code: string; owner_id: string; created_at: string };
+type Project = { id: string; title: string; description: string; type: string; join_code: string; owner_id: string; created_at: string; materials?: Note[] };
 type Member = { user_id: string; role: string; joined_at: string; profile: { full_name: string; email: string } | null };
 type Note = { id: string; title: string; content: string; author_id: string; created_at: string; author: { full_name: string } | null };
 type StoredFile = { name: string; path: string; id: string | null; metadata?: { mimetype?: string; size?: number }; created_at?: string };
@@ -18,6 +18,7 @@ const formatBytes = (bytes = 0) => bytes < 1024 ? `${bytes} B` : bytes < 1024 * 
 
 export default function ProjectDetailPage() {
   const { projectId } = useParams<{ projectId: string }>();
+  const navigate = useNavigate();
   const { session, profile } = useAuth();
   const { tasks: allTasks, categories, save, remove, toggle } = useTasks(session?.user.id, projectId);
   const [project, setProject] = useState<Project | null>(null);
@@ -26,6 +27,7 @@ export default function ProjectDetailPage() {
   const [files, setFiles] = useState<StoredFile[]>([]);
   const [activeTab, setActiveTab] = useState<Tab>("Overview");
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [copyLabel, setCopyLabel] = useState("Copy code");
@@ -62,7 +64,7 @@ export default function ProjectDetailPage() {
 
     try {
       const [projectResult, membersResult, notesResult] = await Promise.all([
-        db.from("projects").select("id,title,description,type,join_code,owner_id,created_at").eq("id", projectId).maybeSingle(),
+        db.from("projects").select("id,title,description,type,join_code,owner_id,created_at,materials").eq("id", projectId).maybeSingle(),
         db.from("project_members").select("user_id,role,joined_at,profiles(full_name,email)").eq("project_id", projectId).order("joined_at"),
         db.from("notes").select("id,title,content,author_id,created_at,profiles(full_name)").eq("project_id", projectId).order("created_at", { ascending: false }),
       ]);
@@ -117,8 +119,14 @@ export default function ProjectDetailPage() {
       author: Array.isArray(row.profiles) ? row.profiles[0] ?? null : row.profiles,
     }));
 
+    // Also include materials array directly from project JSONB column
+    const projectMaterials: Note[] = Array.isArray(projectData.materials) ? projectData.materials : [];
+
     const notesMap = new Map<string, Note>();
     fetchedNotes.forEach((n) => notesMap.set(n.id, n));
+    projectMaterials.forEach((n) => {
+      if (!notesMap.has(n.id)) notesMap.set(n.id, n);
+    });
     localNotes.forEach((n) => {
       if (!notesMap.has(n.id)) notesMap.set(n.id, n);
     });
@@ -146,6 +154,103 @@ export default function ProjectDetailPage() {
     try {
       await loadFiles(projectId, [projectData.owner_id, ...membersData.map((member) => member.user_id)]);
     } catch {}
+  };
+
+  const syncMaterials = async () => {
+    setSyncing(true);
+    await loadProjectData();
+    setSyncing(false);
+    setNotice("Materials and project data synced with class.");
+    window.setTimeout(() => setNotice(""), 3500);
+  };
+
+  const handleDeleteProject = async () => {
+    if (!project) return;
+    const confirmed = window.confirm(
+      `Are you sure you want to delete "${project.title}"? This will permanently delete the project and all notes/materials.`
+    );
+    if (!confirmed) return;
+
+    try {
+      await requireSupabase().from("projects").delete().eq("id", project.id);
+    } catch (err) {
+      console.warn("Supabase project delete failed, proceeding locally:", err);
+    }
+
+    try {
+      const localOwned = JSON.parse(localStorage.getItem("tiny_wins_projects") || "[]");
+      localStorage.setItem("tiny_wins_projects", JSON.stringify(localOwned.filter((p: any) => p.id !== project.id)));
+      const localJoined = JSON.parse(localStorage.getItem("tiny_wins_joined_projects") || "[]");
+      localStorage.setItem("tiny_wins_joined_projects", JSON.stringify(localJoined.filter((p: any) => p.id !== project.id)));
+      localStorage.removeItem(`tiny_wins_notes_${project.id}`);
+    } catch {}
+
+    navigate("/projects");
+  };
+
+  const handleLeaveClass = async () => {
+    if (!project) return;
+    const confirmed = window.confirm(`Are you sure you want to leave "${project.title}"?`);
+    if (!confirmed) return;
+
+    if (session?.user?.id) {
+      try {
+        await requireSupabase()
+          .from("project_members")
+          .delete()
+          .eq("project_id", project.id)
+          .eq("user_id", session.user.id);
+      } catch (err) {
+        console.warn("Supabase member delete failed, proceeding locally:", err);
+      }
+    }
+
+    try {
+      const localJoined = JSON.parse(localStorage.getItem("tiny_wins_joined_projects") || "[]");
+      localStorage.setItem("tiny_wins_joined_projects", JSON.stringify(localJoined.filter((p: any) => p.id !== project.id)));
+    } catch {}
+
+    navigate("/projects");
+  };
+
+  const deleteNote = async (noteId: string) => {
+    const noteToDelete = notes.find((n) => n.id === noteId);
+    if (!noteToDelete) return;
+    const confirmed = window.confirm(`Delete study material "${noteToDelete.title}"?`);
+    if (!confirmed) return;
+
+    // 1. Delete from Supabase notes table
+    try {
+      await requireSupabase().from("notes").delete().eq("id", noteId);
+    } catch (e) {
+      console.warn("Supabase note delete error:", e);
+    }
+
+    // 2. Remove from projects.materials JSONB array in Supabase
+    if (project?.id) {
+      try {
+        const updatedMaterials = (project.materials || []).filter((m: any) => m.id !== noteId);
+        await requireSupabase()
+          .from("projects")
+          .update({ materials: updatedMaterials })
+          .eq("id", project.id);
+      } catch (e) {
+        console.warn("Supabase update project materials on delete error:", e);
+      }
+    }
+
+    // 3. Remove from localStorage
+    try {
+      const localNotes: Note[] = JSON.parse(localStorage.getItem(`tiny_wins_notes_${projectId}`) || "[]");
+      localStorage.setItem(
+        `tiny_wins_notes_${projectId}`,
+        JSON.stringify(localNotes.filter((n) => n.id !== noteId))
+      );
+    } catch {}
+
+    setNotes((prev) => prev.filter((n) => n.id !== noteId));
+    setNotice("Study note deleted.");
+    window.setTimeout(() => setNotice(""), 3000);
   };
 
   const loadFiles = async (id: string, memberIds: string[]) => {
@@ -228,6 +333,7 @@ export default function ProjectDetailPage() {
       author: { full_name: authorName },
     };
 
+    // 1. Insert into Supabase notes table
     try {
       if (session?.user?.id) {
         const { data, error: noteError } = await requireSupabase()
@@ -249,7 +355,19 @@ export default function ProjectDetailPage() {
       console.warn("Supabase note insert warning, saved locally:", e);
     }
 
-    // Always mirror to localStorage
+    // 2. Dual-sync into projects row materials JSONB column in Supabase
+    try {
+      const currentMaterials = Array.isArray(project?.materials) ? project!.materials : [];
+      const updatedMaterials = [newNote, ...currentMaterials.filter((m: any) => m.id !== newNote.id)];
+      await requireSupabase()
+        .from("projects")
+        .update({ materials: updatedMaterials })
+        .eq("id", projectId);
+    } catch (e) {
+      console.warn("Supabase update project materials JSONB warning:", e);
+    }
+
+    // 3. Mirror to localStorage
     try {
       const existingLocal: Note[] = JSON.parse(localStorage.getItem(`tiny_wins_notes_${projectId}`) || "[]");
       localStorage.setItem(
@@ -280,14 +398,140 @@ export default function ProjectDetailPage() {
 
   return <section className="min-h-full bg-[radial-gradient(circle_at_top_right,rgba(34,211,238,.08),transparent_38%),radial-gradient(circle_at_top_left,rgba(139,92,246,.1),transparent_34%)] p-3.5 sm:p-5 lg:p-8">
     <Link to="/projects" className="inline-flex items-center gap-2 text-sm text-zinc-500 transition hover:text-white"><ArrowLeft size={16} /> Back to Projects</Link>
-    <header className="mt-4 sm:mt-6 rounded-2xl sm:rounded-3xl border border-white/[.08] bg-white/[.04] p-4 sm:p-6 shadow-2xl shadow-violet-950/10 lg:p-8"><div className="flex flex-wrap items-start justify-between gap-4 sm:gap-5"><div><div className="flex flex-wrap items-center gap-2 sm:gap-3"><span className="rounded-full bg-cyan-300/10 px-2.5 py-0.5 sm:px-3 sm:py-1 text-[10px] uppercase tracking-[.16em] text-cyan-200">{project.type}</span><span className="text-xs text-zinc-600">Created {formatDate(project.created_at)}</span></div><h1 className="mt-3 sm:mt-4 text-2xl sm:text-3xl font-semibold tracking-tight text-white lg:text-4xl">{project.title}</h1><p className="mt-2 sm:mt-3 max-w-2xl text-xs sm:text-sm leading-6 sm:leading-7 text-zinc-400">{project.description || "No description yet."}</p></div><div className="rounded-2xl border border-violet-300/20 bg-violet-300/10 p-3 sm:p-4"><p className="text-[10px] uppercase tracking-[.16em] text-violet-200">Join code</p><div className="mt-1.5 sm:mt-2 flex items-center gap-2 sm:gap-3"><strong className="font-mono text-lg sm:text-xl tracking-wider text-white">{project.join_code}</strong><button onClick={() => void copyCode()} className="button px-2 py-1 text-xs" title="Copy join code"><Clipboard size={14} /> <span className="sr-only">{copyLabel}</span></button></div><p className="mt-1 text-[10px] sm:text-[11px] text-violet-200/70">{copyLabel}</p></div></div><div className="mt-6 sm:mt-7 flex flex-wrap items-center gap-4"><div className="min-w-[180px] sm:min-w-[220px] flex-1"><div className="flex justify-between text-xs"><span className="text-zinc-500">Project progress</span><span className="text-zinc-200">{progress}%</span></div><div className="mt-2 h-2 overflow-hidden rounded-full bg-white/[.08]"><div className="h-full rounded-full bg-gradient-to-r from-violet-400 to-cyan-300 transition-all" style={{ width: `${progress}%` }} /></div></div><div className="flex gap-4 text-xs text-zinc-500"><span><b className="text-white">{completedCount}</b> done</span><span><b className="text-white">{projectTasks.length - completedCount}</b> remaining</span></div></div></header>
-    {error && <p className="mt-4 rounded-xl border border-red-300/20 bg-red-300/10 px-4 py-3 text-sm text-red-200">{error}</p>}{notice && <p className="mt-4 rounded-xl border border-emerald-300/20 bg-emerald-300/10 px-4 py-3 text-sm text-emerald-200">{notice}</p>}
-    <nav className="mt-6 sm:mt-7 flex gap-1 overflow-x-auto no-scrollbar border-b border-white/[.08] -mx-3.5 px-3.5 sm:mx-0 sm:px-0">{(["Overview", "Tasks", "Files", "Notes", "Members", "Activity"] as Tab[]).map(tab => <button key={tab} onClick={() => setActiveTab(tab)} className={`whitespace-nowrap border-b-2 px-3.5 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition ${activeTab === tab ? "border-cyan-300 text-white" : "border-transparent text-zinc-500 hover:text-zinc-300"}`}>{tab}</button>)}</nav>
+    <header className="mt-4 sm:mt-6 rounded-2xl sm:rounded-3xl border border-white/[.08] bg-white/[.04] p-4 sm:p-6 shadow-2xl shadow-violet-950/10 lg:p-8">
+      <div className="flex flex-wrap items-start justify-between gap-4 sm:gap-5">
+        <div>
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            <span className="rounded-full bg-cyan-300/10 px-2.5 py-0.5 sm:px-3 sm:py-1 text-[10px] uppercase tracking-[.16em] text-cyan-200">
+              {project.type}
+            </span>
+            <span className="text-xs text-zinc-600">Created {formatDate(project.created_at)}</span>
+          </div>
+          <h1 className="mt-3 sm:mt-4 text-2xl sm:text-3xl font-semibold tracking-tight text-white lg:text-4xl">
+            {project.title}
+          </h1>
+          <p className="mt-2 sm:mt-3 max-w-2xl text-xs sm:text-sm leading-6 sm:leading-7 text-zinc-400">
+            {project.description || "No description yet."}
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-2 min-w-[200px]">
+          <div className="rounded-2xl border border-violet-300/20 bg-violet-300/10 p-3 sm:p-4">
+            <p className="text-[10px] uppercase tracking-[.16em] text-violet-200">Join code</p>
+            <div className="mt-1.5 sm:mt-2 flex items-center justify-between gap-2">
+              <strong className="font-mono text-lg sm:text-xl tracking-wider text-white">
+                {project.join_code}
+              </strong>
+              <button
+                type="button"
+                onClick={() => void copyCode()}
+                className="button px-2.5 py-1 text-xs"
+                title="Copy join code"
+              >
+                <Clipboard size={14} />
+                <span className="sr-only">{copyLabel}</span>
+              </button>
+            </div>
+            <p className="mt-1 text-[10px] sm:text-[11px] text-violet-200/70">{copyLabel}</p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void syncMaterials()}
+              disabled={syncing}
+              className="button flex-1 inline-flex items-center justify-center gap-1.5 border border-cyan-400/30 bg-cyan-400/10 text-cyan-200 text-xs px-3 py-1.5 hover:bg-cyan-400/20 transition"
+              title="Refresh & sync study materials from class"
+            >
+              <RefreshCw size={13} className={syncing ? "animate-spin" : ""} />
+              <span>{syncing ? "Syncing..." : "Sync Materials"}</span>
+            </button>
+            {isOwner ? (
+              <button
+                type="button"
+                onClick={() => void handleDeleteProject()}
+                className="button inline-flex items-center gap-1.5 border border-rose-500/30 bg-rose-500/10 text-rose-300 text-xs px-3 py-1.5 hover:bg-rose-500/20 transition"
+                title="Delete project"
+              >
+                <Trash2 size={13} />
+                <span>Delete</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void handleLeaveClass()}
+                className="button inline-flex items-center gap-1.5 border border-amber-500/30 bg-amber-500/10 text-amber-300 text-xs px-3 py-1.5 hover:bg-amber-500/20 transition"
+                title="Leave class"
+              >
+                <LogOut size={13} />
+                <span>Leave</span>
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-6 sm:mt-7 flex flex-wrap items-center gap-4">
+        <div className="min-w-[180px] sm:min-w-[220px] flex-1">
+          <div className="flex justify-between text-xs">
+            <span className="text-zinc-500">Project progress</span>
+            <span className="text-zinc-200">{progress}%</span>
+          </div>
+          <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/[.08]">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-violet-400 to-cyan-300 transition-all"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+        </div>
+        <div className="flex gap-4 text-xs text-zinc-500">
+          <span><b className="text-white">{completedCount}</b> done</span>
+          <span><b className="text-white">{projectTasks.length - completedCount}</b> remaining</span>
+        </div>
+      </div>
+    </header>
+
+    {error && <p className="mt-4 rounded-xl border border-red-300/20 bg-red-300/10 px-4 py-3 text-sm text-red-200">{error}</p>}
+    {notice && <p className="mt-4 rounded-xl border border-emerald-300/20 bg-emerald-300/10 px-4 py-3 text-sm text-emerald-200">{notice}</p>}
+
+    <nav className="mt-6 sm:mt-7 flex gap-1 overflow-x-auto no-scrollbar border-b border-white/[.08] -mx-3.5 px-3.5 sm:mx-0 sm:px-0">
+      {(["Overview", "Tasks", "Files", "Notes", "Members", "Activity"] as Tab[]).map((tab) => (
+        <button
+          key={tab}
+          onClick={() => setActiveTab(tab)}
+          className={`whitespace-nowrap border-b-2 px-3.5 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition ${
+            activeTab === tab ? "border-cyan-300 text-white" : "border-transparent text-zinc-500 hover:text-zinc-300"
+          }`}
+        >
+          {tab}
+        </button>
+      ))}
+    </nav>
+
     <div className="mt-6 max-w-6xl">
       {activeTab === "Overview" && <Overview project={project} tasks={projectTasks} members={members} activity={activity} progress={progress} />}
       {activeTab === "Tasks" && <TaskSection tasks={projectTasks} categories={categories} currentUserId={session?.user.id} showForm={showTaskForm} setShowForm={setShowTaskForm} onSubmit={submitTask} saving={taskSaving} title={taskTitle} setTitle={setTaskTitle} description={taskDescription} setDescription={setTaskDescription} category={taskCategory} setCategory={setTaskCategory} priority={taskPriority} setPriority={setTaskPriority} dueDate={taskDueDate} setDueDate={setTaskDueDate} dueTime={taskDueTime} setDueTime={setTaskDueTime} onToggle={task => void toggle(task)} onDelete={task => void remove(task.id)} />}
       {activeTab === "Files" && <FilesSection files={files} uploading={uploading} onUpload={uploadFile} onOpen={file => void openFile(file)} />}
-      {activeTab === "Notes" && <NotesSection notes={notes} canAdd={Boolean(isOwner || profile?.role === "teacher")} showForm={showNoteForm} setShowForm={setShowNoteForm} title={noteTitle} setTitle={setNoteTitle} content={noteContent} setContent={setNoteContent} saving={noteSaving} onSubmit={submitNote} onViewNote={note => setViewingNote(note)} />}
+      {activeTab === "Notes" && (
+        <NotesSection
+          notes={notes}
+          canAdd={Boolean(isOwner || profile?.role === "teacher")}
+          isOwner={isOwner}
+          currentUserId={session?.user.id}
+          showForm={showNoteForm}
+          setShowForm={setShowNoteForm}
+          title={noteTitle}
+          setTitle={setNoteTitle}
+          content={noteContent}
+          setContent={setNoteContent}
+          saving={noteSaving}
+          onSubmit={submitNote}
+          onViewNote={note => setViewingNote(note)}
+          onDeleteNote={noteId => void deleteNote(noteId)}
+          onSync={() => void syncMaterials()}
+          syncing={syncing}
+        />
+      )}
       {activeTab === "Members" && <MembersSection members={members} ownerId={project.owner_id} />}
       {activeTab === "Activity" && <ActivitySection activity={activity} />}
     </div>
@@ -329,6 +573,145 @@ function FilesSection({ files, uploading, onUpload, onOpen }: { files: StoredFil
 
 function FilePreview({ file, url, onClose }: { file: StoredFile; url: string; onClose: () => void }) { const mimeType = fileMimeType(file); return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={`Preview ${file.name}`} onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><div className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-white/[.1] bg-[#111114] shadow-2xl"><div className="flex items-center gap-4 border-b border-white/[.08] px-5 py-4"><FileText size={18} className="text-cyan-300" /><p className="min-w-0 flex-1 truncate text-sm text-white">{file.name}</p><button onClick={onClose} className="button p-2" aria-label="Close preview"><X size={16} /></button></div><div className="min-h-0 overflow-auto bg-black/30 p-4">{isImageFile(file) ? <img src={url} alt={file.name} className="mx-auto max-h-[72vh] max-w-full object-contain" /> : isPdfFile(file) ? <iframe src={url} title={file.name} className="h-[72vh] w-full rounded-lg bg-white" /> : mimeType.startsWith("audio/") ? <audio src={url} controls className="mx-auto mt-16 w-full max-w-xl" /> : mimeType.startsWith("video/") ? <video src={url} controls className="mx-auto max-h-[72vh] max-w-full" /> : <iframe src={url} title={file.name} className="h-[72vh] w-full rounded-lg bg-white" />}</div></div></div>; }
 
-function NotesSection({ notes, canAdd, showForm, setShowForm, title, setTitle, content, setContent, saving, onSubmit, onViewNote }: { notes: Note[]; canAdd: boolean; showForm: boolean; setShowForm: (value: boolean) => void; title: string; setTitle: (value: string) => void; content: string; setContent: (value: string) => void; saving: boolean; onSubmit: (event: React.FormEvent) => void; onViewNote: (note: Note) => void }) { return <div><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs uppercase tracking-[.16em] text-zinc-600">Project notes</p><h2 className="mt-2 text-2xl font-medium text-white">Keep the context close</h2></div>{canAdd && <button onClick={() => setShowForm(!showForm)} className="button inline-flex items-center gap-2 bg-violet-400 text-zinc-950"><Plus size={16} /> Add note</button>}</div>{showForm && <form onSubmit={onSubmit} className="mt-5 rounded-2xl border border-violet-300/20 bg-violet-300/[.06] p-5"><input className="field" required placeholder="Note title" value={title} onChange={event => setTitle(event.target.value)} /><textarea className="field mt-3 min-h-32" required placeholder="Write a useful note..." value={content} onChange={event => setContent(event.target.value)} /><div className="mt-4 flex gap-2"><button disabled={saving} className="button bg-white text-zinc-950 disabled:opacity-50">{saving ? "Saving..." : "Save note"}</button><button type="button" onClick={() => setShowForm(false)} className="button">Cancel</button></div></form>}<div className="mt-5 grid gap-4 md:grid-cols-2">{notes.length ? notes.map(note => <article key={note.id} className="group relative rounded-2xl border border-white/[.07] bg-white/[.035] p-5 transition hover:border-violet-400/40 hover:bg-white/[.05]"><div className="flex items-start justify-between gap-2"><h3 className="font-medium text-white">{note.title}</h3><button onClick={() => onViewNote(note)} className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-2 py-1 text-[11px] font-medium text-cyan-200 transition hover:bg-cyan-400/20" title="Open protected viewer"><Lock size={11} /> Protected View</button></div><p className="mt-3 line-clamp-4 whitespace-pre-wrap text-sm leading-6 text-zinc-400">{note.content}</p><div className="mt-5 flex items-center justify-between text-xs text-zinc-600"><span>{note.author?.full_name || "Project member"} · {formatDate(note.created_at)}</span><span className="text-[11px] text-zinc-500">Anti-screenshot protected</span></div></article>) : <div className="rounded-2xl border border-dashed border-white/[.1] px-6 py-12 text-center md:col-span-2"><FileText className="mx-auto text-zinc-700" size={26} /><p className="mt-3 text-sm text-zinc-500">No notes have been added yet.</p></div>}</div></div>; }
+function NotesSection({
+  notes,
+  canAdd,
+  isOwner,
+  currentUserId,
+  showForm,
+  setShowForm,
+  title,
+  setTitle,
+  content,
+  setContent,
+  saving,
+  onSubmit,
+  onViewNote,
+  onDeleteNote,
+  onSync,
+  syncing,
+}: {
+  notes: Note[];
+  canAdd: boolean;
+  isOwner: boolean;
+  currentUserId?: string;
+  showForm: boolean;
+  setShowForm: (value: boolean) => void;
+  title: string;
+  setTitle: (value: string) => void;
+  content: string;
+  setContent: (value: string) => void;
+  saving: boolean;
+  onSubmit: (event: React.FormEvent) => void;
+  onViewNote: (note: Note) => void;
+  onDeleteNote: (noteId: string) => void;
+  onSync: () => void;
+  syncing: boolean;
+}) {
+  return (
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[.16em] text-zinc-600">Project study materials</p>
+          <h2 className="mt-2 text-2xl font-medium text-white">Protected course notes & materials</h2>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onSync}
+            disabled={syncing}
+            className="button inline-flex items-center gap-1.5 border border-cyan-400/30 bg-cyan-400/10 text-cyan-200 text-xs px-3 py-2 hover:bg-cyan-400/20 transition"
+            title="Refresh materials from server"
+          >
+            <RefreshCw size={13} className={syncing ? "animate-spin" : ""} />
+            <span>{syncing ? "Syncing..." : "Sync Materials"}</span>
+          </button>
+          {canAdd && (
+            <button
+              onClick={() => setShowForm(!showForm)}
+              className="button inline-flex items-center gap-2 bg-violet-400 text-zinc-950"
+            >
+              <Plus size={16} /> Add material
+            </button>
+          )}
+        </div>
+      </div>
+
+      {showForm && (
+        <form onSubmit={onSubmit} className="mt-5 rounded-2xl border border-violet-300/20 bg-violet-300/[.06] p-5">
+          <input
+            className="field"
+            required
+            placeholder="Material / Note title"
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+          />
+          <textarea
+            className="field mt-3 min-h-32"
+            required
+            placeholder="Write protected study notes, questions, or syllabus content..."
+            value={content}
+            onChange={(event) => setContent(event.target.value)}
+          />
+          <div className="mt-4 flex gap-2">
+            <button disabled={saving} className="button bg-white text-zinc-950 disabled:opacity-50">
+              {saving ? "Saving..." : "Save material"}
+            </button>
+            <button type="button" onClick={() => setShowForm(false)} className="button">
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
+      <div className="mt-5 grid gap-4 md:grid-cols-2">
+        {notes.length ? (
+          notes.map((note) => (
+            <article
+              key={note.id}
+              className="group relative rounded-2xl border border-white/[.07] bg-white/[.035] p-5 transition hover:border-violet-400/40 hover:bg-white/[.05]"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <h3 className="font-medium text-white">{note.title}</h3>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => onViewNote(note)}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-2 py-1 text-[11px] font-medium text-cyan-200 transition hover:bg-cyan-400/20"
+                    title="Open protected viewer"
+                  >
+                    <Lock size={11} /> Protected View
+                  </button>
+                  {(isOwner || note.author_id === currentUserId) && (
+                    <button
+                      type="button"
+                      onClick={() => onDeleteNote(note.id)}
+                      className="rounded-lg p-1 text-zinc-500 hover:bg-rose-500/15 hover:text-rose-400 transition"
+                      title="Delete study note"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  )}
+                </div>
+              </div>
+              <p className="mt-3 line-clamp-4 whitespace-pre-wrap text-sm leading-6 text-zinc-400">
+                {note.content}
+              </p>
+              <div className="mt-5 flex items-center justify-between text-xs text-zinc-600">
+                <span>{note.author?.full_name || "Project member"} · {formatDate(note.created_at)}</span>
+                <span className="text-[11px] text-zinc-500">Anti-screenshot protected</span>
+              </div>
+            </article>
+          ))
+        ) : (
+          <div className="rounded-2xl border border-dashed border-white/[.1] px-6 py-12 text-center md:col-span-2">
+            <FileText className="mx-auto text-zinc-700" size={26} />
+            <p className="mt-3 text-sm text-zinc-500">No study notes or materials have been added yet.</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function MembersSection({ members, ownerId }: { members: Member[]; ownerId: string }) { return <div><p className="text-xs uppercase tracking-[.16em] text-zinc-600">Project members</p><h2 className="mt-2 text-2xl font-medium text-white">People in this workspace</h2><div className="mt-5 space-y-2">{members.map(member => <div key={member.user_id} className="flex items-center gap-4 rounded-xl border border-white/[.07] bg-white/[.035] p-4"><span className="grid h-10 w-10 place-items-center rounded-full bg-violet-300/10 text-sm text-violet-200">{(member.profile?.full_name || "U").slice(0, 1).toUpperCase()}</span><div className="min-w-0 flex-1"><p className="text-sm text-zinc-200">{member.profile?.full_name || "Project member"}</p><p className="truncate text-xs text-zinc-600">{member.profile?.email || "Email unavailable"}</p></div><span className="text-right text-xs capitalize text-zinc-500">{member.user_id === ownerId ? "Owner" : member.role}<br /><span className="text-zinc-700">Joined {formatDate(member.joined_at)}</span></span></div>)}{!members.length && <p className="text-sm text-zinc-600">No member records are available.</p>}</div></div>; }
