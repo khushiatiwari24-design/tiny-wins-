@@ -1,12 +1,17 @@
 import { useState, useEffect, useRef } from "react";
 import { Headphones, Pause, Play, RotateCcw, Timer, Volume2 } from "lucide-react";
 import { addReclaimedMinutes } from "../../lib/streakUtils";
+import {
+  focusAudio,
+  FOCUS_AUDIO_TRACKS,
+  type FocusAudioType,
+} from "../../lib/focusAudioEngine";
 
 interface FocusModeWidgetProps {
   onSessionComplete?: (addedMinutes: number) => void;
 }
 
-export type AmbientSoundType = "off" | "rain" | "cafe" | "brown";
+export type AmbientSoundType = FocusAudioType;
 
 export default function FocusModeWidget({ onSessionComplete }: FocusModeWidgetProps) {
   const [selectedPreset, setSelectedPreset] = useState<number | "custom">(25);
@@ -19,137 +24,36 @@ export default function FocusModeWidget({ onSessionComplete }: FocusModeWidgetPr
   const [isRunning, setIsRunning] = useState(false);
   const [isCompleted, setIsCompleted] = useState(false);
 
-  // Ambient focus sound state
-  const [ambientType, setAmbientType] = useState<AmbientSoundType>("off");
-  const [volume, setVolume] = useState<number>(0.6);
+  // Ambient & Study Music state (standalone + timer sync)
+  const [activeTrack, setActiveTrack] = useState<FocusAudioType>(() => focusAudio.getCurrentTrack());
+  const [volume, setVolume] = useState<number>(() => focusAudio.getVolume());
 
   const intervalRef = useRef<number | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
-  const ambientSourceRef = useRef<AudioBufferSourceNode | null>(null);
-  const ambientGainRef = useRef<GainNode | null>(null);
 
-  // Stop ambient sound
-  const stopAmbient = () => {
-    if (ambientSourceRef.current) {
-      try {
-        ambientSourceRef.current.stop();
-        ambientSourceRef.current.disconnect();
-      } catch {}
-      ambientSourceRef.current = null;
-    }
-  };
-
-  // Create noise buffers using Web Audio API (zero external network requests)
-  const createNoiseBuffer = (ctx: AudioContext, type: "rain" | "cafe" | "brown") => {
-    const bufferSize = ctx.sampleRate * 4; // 4 seconds loop
-    const buffer = ctx.createBuffer(2, bufferSize, ctx.sampleRate);
-
-    for (let channel = 0; channel < 2; channel++) {
-      const data = buffer.getChannelData(channel);
-      if (type === "rain") {
-        // Soft rain: pink-filtered noise with subtle droplet variations
-        let b0 = 0;
-        let b1 = 0;
-        let b2 = 0;
-        for (let i = 0; i < bufferSize; i++) {
-          const white = Math.random() * 2 - 1;
-          b0 = 0.99 * b0 + white * 0.05;
-          b1 = 0.95 * b1 + white * 0.1;
-          b2 = 0.85 * b2 + white * 0.2;
-          const droplet = Math.random() > 0.998 ? Math.random() * 0.25 : 0;
-          data[i] = (b0 + b1 + b2) * 0.22 + droplet;
-        }
-      } else if (type === "cafe") {
-        // Warm cafe / pink noise (Paul Kellet algorithm)
-        let b0 = 0;
-        let b1 = 0;
-        let b2 = 0;
-        let b3 = 0;
-        let b4 = 0;
-        let b5 = 0;
-        let b6 = 0;
-        for (let i = 0; i < bufferSize; i++) {
-          const white = Math.random() * 2 - 1;
-          b0 = 0.99886 * b0 + white * 0.0555179;
-          b1 = 0.99332 * b1 + white * 0.0750759;
-          b2 = 0.96900 * b2 + white * 0.1538520;
-          b3 = 0.86650 * b3 + white * 0.3104856;
-          b4 = 0.55000 * b4 + white * 0.5329522;
-          b5 = -0.7616 * b5 - white * 0.0168980;
-          data[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.09;
-          b6 = white * 0.115926;
-        }
-      } else if (type === "brown") {
-        // Deep brown noise (1/f^2) - low-frequency rumble for ADHD focus
-        let lastOut = 0.0;
-        for (let i = 0; i < bufferSize; i++) {
-          const white = Math.random() * 2 - 1;
-          lastOut = (lastOut + 0.02 * white) / 1.02;
-          data[i] = lastOut * 1.8;
-        }
-      }
-    }
-    return buffer;
-  };
-
-  // Start ambient audio
-  const startAmbient = (type: AmbientSoundType, vol: number) => {
-    stopAmbient();
-    if (type === "off") return;
-
-    try {
-      const AudioCtx =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      if (!AudioCtx) return;
-      if (!audioCtxRef.current) {
-        audioCtxRef.current = new AudioCtx();
-      }
-      const ctx = audioCtxRef.current;
-      if (ctx.state === "suspended") {
-        ctx.resume();
-      }
-
-      const buffer = createNoiseBuffer(ctx, type);
-      const source = ctx.createBufferSource();
-      source.buffer = buffer;
-      source.loop = true;
-
-      const gainNode = ctx.createGain();
-      gainNode.gain.setValueAtTime(vol * 0.25, ctx.currentTime);
-
-      source.connect(gainNode);
-      gainNode.connect(ctx.destination);
-
-      source.start();
-      ambientSourceRef.current = source;
-      ambientGainRef.current = gainNode;
-    } catch {
-      // AudioContext could be blocked by browser policy until interaction
-    }
-  };
-
-  // Sync ambient sound with isRunning and ambientType
-  useEffect(() => {
-    if (isRunning && ambientType !== "off") {
-      startAmbient(ambientType, volume);
+  // Instant Playback on click (Preview & Standalone listening)
+  const handleSelectTrack = (trackId: FocusAudioType) => {
+    if (trackId === "off" || trackId === activeTrack) {
+      focusAudio.stop();
+      setActiveTrack("off");
     } else {
-      stopAmbient();
+      focusAudio.play(trackId);
+      setActiveTrack(trackId);
     }
-    return () => {
-      stopAmbient();
-    };
-  }, [isRunning, ambientType]);
+  };
 
-  // Sync volume dynamically
+  // Live Volume Controller
+  const handleVolumeChange = (newVol: number) => {
+    setVolume(newVol);
+    focusAudio.setVolume(newVol);
+  };
+
+  // Sync state if audio stops externally
   useEffect(() => {
-    if (ambientGainRef.current && audioCtxRef.current) {
-      ambientGainRef.current.gain.setValueAtTime(
-        volume * 0.25,
-        audioCtxRef.current.currentTime
-      );
-    }
-  }, [volume]);
+    return () => {
+      // Keep audio playing if user is in standalone focus or cleans up on unmount
+    };
+  }, []);
 
   // Play audio chime using Web Audio API on session completion
   const playChime = () => {
@@ -389,60 +293,69 @@ export default function FocusModeWidget({ onSessionComplete }: FocusModeWidgetPr
         </button>
       </div>
 
-      {/* Ambient Sound Selector */}
+      {/* Ambient & Study Music Section */}
       <div className="mt-4 pt-3 border-t border-white/10">
-        <div className="flex items-center justify-between text-xs text-slate-300 mb-2">
+        <div className="flex items-center justify-between text-xs text-slate-300 mb-2.5">
           <span className="flex items-center gap-1.5 font-medium">
             <Headphones size={13} className="text-orange-300" />
-            Ambient focus sound
+            Ambient & Study Music
           </span>
-          {ambientType !== "off" && (
-            <span className="text-[10px] text-orange-200/90 font-medium">
-              {isRunning ? "Active 🔊" : "On timer start"}
+          {activeTrack !== "off" ? (
+            <span className="flex items-center gap-1.5 text-[10px] text-orange-200 font-medium">
+              <span className="flex items-end gap-0.5 h-3">
+                <span className="w-0.5 bg-orange-400 rounded-full animate-bounce h-2" style={{ animationDuration: '0.8s', animationDelay: '0ms' }} />
+                <span className="w-0.5 bg-orange-300 rounded-full animate-bounce h-3" style={{ animationDuration: '0.8s', animationDelay: '150ms' }} />
+                <span className="w-0.5 bg-amber-300 rounded-full animate-bounce h-1.5" style={{ animationDuration: '0.8s', animationDelay: '300ms' }} />
+              </span>
+              <span>Playing {FOCUS_AUDIO_TRACKS.find((t) => t.id === activeTrack)?.label}</span>
             </span>
+          ) : (
+            <span className="text-[10px] text-slate-500">Click to listen</span>
           )}
         </div>
+
+        {/* Tracks Grid (Responsive 4-col + 3-col) */}
         <div className="grid grid-cols-4 gap-1.5">
-          {[
-            { id: "off" as const, label: "Off", icon: "🔇" },
-            { id: "rain" as const, label: "Rain", icon: "🌧️" },
-            { id: "cafe" as const, label: "Cafe", icon: "☕" },
-            { id: "brown" as const, label: "Brown", icon: "🌊" },
-          ].map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => setAmbientType(item.id)}
-              className={`rounded-lg py-1.5 text-[11px] font-medium transition flex flex-col items-center gap-0.5 border ${
-                ambientType === item.id
-                  ? "border-orange-300/60 bg-orange-400/20 text-orange-200 shadow-sm"
-                  : "border-white/5 bg-white/[.02] text-slate-400 hover:text-slate-200 hover:bg-white/[.05]"
-              }`}
-            >
-              <span className="text-xs">{item.icon}</span>
-              <span>{item.label}</span>
-            </button>
-          ))}
+          {FOCUS_AUDIO_TRACKS.map((item) => {
+            const isSelected = activeTrack === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => handleSelectTrack(item.id)}
+                title={item.description}
+                className={`rounded-xl py-2 px-1 text-[11px] font-medium transition flex flex-col items-center justify-center gap-0.5 border text-center ${
+                  isSelected
+                    ? "border-orange-300/70 bg-gradient-to-b from-orange-400/25 to-amber-500/15 text-orange-200 shadow-sm shadow-orange-500/15"
+                    : "border-white/5 bg-white/[.02] text-slate-400 hover:text-slate-200 hover:bg-white/[.05]"
+                }`}
+              >
+                <span className="text-sm leading-none">{item.icon}</span>
+                <span className="truncate max-w-full text-[10px] leading-tight font-medium mt-0.5">
+                  {item.label}
+                </span>
+              </button>
+            );
+          })}
         </div>
 
-        {ambientType !== "off" && (
-          <div className="mt-2.5 flex items-center gap-2 px-1">
-            <Volume2 size={12} className="text-slate-400 shrink-0" />
-            <input
-              type="range"
-              min="0.1"
-              max="1"
-              step="0.05"
-              value={volume}
-              onChange={(e) => setVolume(parseFloat(e.target.value))}
-              className="w-full accent-orange-300 h-1 bg-white/10 rounded-lg cursor-pointer"
-              title="Ambient Volume"
-            />
-            <span className="text-[10px] text-slate-400 w-7 text-right">
-              {Math.round(volume * 100)}%
-            </span>
-          </div>
-        )}
+        {/* Volume Slider Controller (0% - 100%) */}
+        <div className="mt-3 flex items-center gap-2.5 px-1 py-1 rounded-lg bg-white/[.02] border border-white/5">
+          <Volume2 size={13} className="text-slate-400 shrink-0 ml-1" />
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            value={volume}
+            onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
+            className="w-full accent-orange-300 h-1 bg-white/10 rounded-lg cursor-pointer"
+            title="Adjust volume"
+          />
+          <span className="text-[10px] font-mono text-slate-400 w-8 text-right shrink-0 mr-1">
+            {Math.round(volume * 100)}%
+          </span>
+        </div>
       </div>
 
       {/* Completion Toast Notification */}
