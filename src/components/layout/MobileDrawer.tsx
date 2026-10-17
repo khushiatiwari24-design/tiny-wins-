@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { LogOut, Settings, Sparkles, X } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { navLinks } from "./navItems";
+import { getTodayMotivationalQuote } from "../../lib/motivationalQuotes";
 
 interface MobileDrawerProps {
   isOpen: boolean;
@@ -12,6 +13,7 @@ interface MobileDrawerProps {
 
 export default function MobileDrawer({ isOpen, onClose }: MobileDrawerProps) {
   const { profile, signOut } = useAuth();
+  const dailyQuote = getTodayMotivationalQuote();
 
   const initials = (profile?.full_name || "U")
     .split(" ")
@@ -137,8 +139,8 @@ export default function MobileDrawer({ isOpen, onClose }: MobileDrawerProps) {
             {/* Profile & Motivational Card */}
             <div className="mt-6 space-y-3 border-t border-[#1e293b]/60 pt-4">
               <div className="rounded-xl border border-white/5 bg-slate-900/60 p-3">
-                <p className="font-handwriting text-center text-sm text-pink-300">
-                  “A better you is built by tiny wins” 💕
+                <p className="font-handwriting text-center text-xs text-pink-300 line-clamp-2">
+                  “{dailyQuote.text}” 💕
                 </p>
               </div>
 

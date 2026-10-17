@@ -1,7 +1,23 @@
 import heroBg from "../assets/heropage.jpeg.jpg";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { BookOpen, Check, Clock3, Flame, FolderPlus, Heart, Plus, Star, Timer, TrendingUp } from "lucide-react";
+import {
+  BookOpen,
+  Check,
+  Clock3,
+  Copy,
+  Flame,
+  FolderPlus,
+  Heart,
+  HeartHandshake,
+  Plus,
+  RefreshCw,
+  Shield,
+  Sparkles,
+  Star,
+  Timer,
+  TrendingUp,
+} from "lucide-react";
 import { useTasks } from "../hooks/useTasks";
 import { useAuth } from "../context/AuthContext";
 import TaskList from "../components/tasks/TaskList";
@@ -14,10 +30,19 @@ import {
   getReclaimedMinutes,
   formatMinutesToHours,
   recordCompletionToday,
+  activateRecoveryShieldToday,
+  getRecoveryShieldStatus,
   type WeekDayInfo,
 } from "../lib/streakUtils";
 import MomentumGraph from "../components/dashboard/MomentumGraph";
 import FocusModeWidget from "../components/dashboard/FocusModeWidget";
+import ConfettiCelebration from "../components/celebration/ConfettiCelebration";
+import StrugglingModal from "../components/StrugglingModal";
+import {
+  getTodayMotivationalQuote,
+  getRandomMotivationalQuote,
+  type MotivationalQuote,
+} from "../lib/motivationalQuotes";
 
 interface DailyFocus {
   deepWork: string;
@@ -112,6 +137,8 @@ export default function WorkspacePage({
   const [selected, setSelected] = useState(dateKey());
   const [completedFilter, setCompletedFilter] = useState("all");
   const [reclaimedMinutes, setReclaimedMinutes] = useState<number>(getReclaimedMinutes);
+  const [shieldVersion, setShieldVersion] = useState(0);
+  const [triggerConfetti, setTriggerConfetti] = useState(false);
 
   const today = dateKey();
   const list = useMemo(() => {
@@ -126,7 +153,7 @@ export default function WorkspacePage({
   const completed = tasks.filter((t) => t.completed).length;
 
   // Real-time automatic streak and daily week calculation
-  const completedDates = useMemo(() => getCompletedDates(tasks), [tasks]);
+  const completedDates = useMemo(() => getCompletedDates(tasks), [tasks, shieldVersion]);
   const streak = useMemo(() => calculateActiveStreak(completedDates), [completedDates]);
   const weekDaysInfo = useMemo(() => getCurrentWeekDays(completedDates), [completedDates]);
 
@@ -134,6 +161,11 @@ export default function WorkspacePage({
   const handleToggle = async (task: Task) => {
     if (!task.completed) {
       recordCompletionToday();
+      const todayTasks = tasks.filter((t) => t.dueDate === today);
+      const willBeCompleted = todayTasks.filter((t) => t.completed || t.id === task.id).length;
+      if (todayTasks.length > 0 && willBeCompleted === todayTasks.length) {
+        setTriggerConfetti(true);
+      }
     }
     await toggle(task);
   };
@@ -153,6 +185,9 @@ export default function WorkspacePage({
         save={save}
         remove={remove}
         toggle={handleToggle}
+        onRefreshShield={() => setShieldVersion((v) => v + 1)}
+        triggerConfetti={triggerConfetti}
+        setTriggerConfetti={setTriggerConfetti}
       />
     );
   if (view === "analytics")
@@ -321,6 +356,9 @@ function Dashboard({
   save,
   remove,
   toggle,
+  onRefreshShield,
+  triggerConfetti,
+  setTriggerConfetti,
 }: {
   tasks: Task[];
   categories: ReturnType<typeof useTasks>["categories"];
@@ -332,6 +370,9 @@ function Dashboard({
   save: ReturnType<typeof useTasks>["save"];
   remove: ReturnType<typeof useTasks>["remove"];
   toggle: ReturnType<typeof useTasks>["toggle"];
+  onRefreshShield: () => void;
+  triggerConfetti: boolean;
+  setTriggerConfetti: React.Dispatch<React.SetStateAction<boolean>>;
 }) {
   const navigate = useNavigate();
   const today = dateKey();
@@ -351,6 +392,36 @@ function Dashboard({
     reflection: false,
   });
   const [isSavingWin, setIsSavingWin] = useState(false);
+
+  // Daily Rotating Motivating Thought state
+  const [quote, setQuote] = useState<MotivationalQuote>(getTodayMotivationalQuote);
+  const [copiedQuote, setCopiedQuote] = useState(false);
+
+  // Recovery Shield state
+  const [shieldStatus, setShieldStatus] = useState(getRecoveryShieldStatus);
+
+  // Struggling / Friction Check modal state
+  const [isStrugglingModalOpen, setIsStrugglingModalOpen] = useState(false);
+  const [strugglingTask, setStrugglingTask] = useState<Task | null>(null);
+
+  const handleNewQuote = () => {
+    setQuote(getRandomMotivationalQuote());
+  };
+
+  const handleCopyQuote = async () => {
+    try {
+      await navigator.clipboard.writeText(`"${quote.text}" — ${quote.author}`);
+      setCopiedQuote(true);
+      setTimeout(() => setCopiedQuote(false), 2000);
+    } catch {}
+  };
+
+  const handleClaimShield = () => {
+    activateRecoveryShieldToday();
+    setShieldStatus(getRecoveryShieldStatus());
+    onRefreshShield();
+  };
+
   const focusItems: Array<{
     key: keyof DailyFocus;
     label: string;
@@ -415,6 +486,53 @@ function Dashboard({
   };
   return (
     <section className="p-3.5 sm:p-5 lg:p-8">
+      {/* Daily Rotating Motivating Thought Banner */}
+      <div className="mb-5 sm:mb-6 rounded-2xl border border-pink-500/25 bg-gradient-to-r from-pink-950/40 via-purple-950/30 to-slate-900/60 p-4 sm:p-5 backdrop-blur-md shadow-lg shadow-pink-950/20">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <span className="grid h-8 w-8 place-items-center rounded-xl bg-pink-500/20 text-pink-300 text-sm">
+              ✨
+            </span>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-pink-300">
+                Daily Motivating Thought
+              </p>
+              <p className="text-[11px] text-slate-400">
+                Fresh fuel for small steps, consistency, and kindness to yourself
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 self-end sm:self-auto">
+            <button
+              type="button"
+              onClick={handleNewQuote}
+              className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-300 transition hover:bg-white/10 hover:text-white active:scale-95"
+              title="Get another motivating thought"
+            >
+              <RefreshCw size={12} />
+              <span>New Thought</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleCopyQuote}
+              className="flex items-center gap-1.5 rounded-lg border border-pink-400/30 bg-pink-500/10 px-2.5 py-1 text-xs font-medium text-pink-200 transition hover:bg-pink-500/20 active:scale-95"
+              title="Copy thought to clipboard"
+            >
+              <Copy size={12} />
+              <span>{copiedQuote ? "Copied! ❤️" : "Share / Copy"}</span>
+            </button>
+          </div>
+        </div>
+        <div className="mt-3.5 pl-1 sm:pl-2">
+          <p className="text-sm sm:text-base font-medium italic text-slate-100 leading-relaxed">
+            "{quote.text}"
+          </p>
+          <p className="mt-1 text-xs text-pink-300/80 font-medium">
+            — {quote.author}
+          </p>
+        </div>
+      </div>
+
       <div
         className="relative flex min-h-[220px] sm:min-h-[280px] md:min-h-[360px] w-full items-end overflow-hidden rounded-2xl sm:rounded-3xl border border-white/10 p-4 sm:p-6 md:p-10 shadow-2xl transition-all"
         style={{
@@ -531,8 +649,30 @@ function Dashboard({
         </div>
         <div className="interactive-card glass-panel rounded-2xl p-4 sm:p-5"><div className="flex items-center justify-between"><p className="text-xs font-semibold uppercase tracking-widest text-slate-300">Tiny wins today</p><span className="text-xl">⏱</span></div><p className="mt-3 sm:mt-4 text-2xl sm:text-3xl font-bold text-white">{completedCount} <span className="text-base sm:text-lg text-slate-500">/ {todayTasks.length || 6}</span></p><div className="mt-4 flex gap-2">{Array.from({ length: 6 }).map((_, index) => <span key={index} className={`h-2.5 w-2.5 rounded-full ${index < completedCount ? "bg-orange-300 shadow-lg shadow-orange-300/50" : "bg-white/10"}`} />)}</div><p className="mt-4 text-xs leading-5 text-slate-400">{Math.max(0, 6 - completedCount)} more and you&apos;ll complete today&apos;s tiny wins! Keep going! 👑</p></div>
         <div className="interactive-card glass-panel rounded-2xl bg-[linear-gradient(145deg,rgba(251,146,60,.16),rgba(15,23,42,.72))] p-4 sm:p-5">
-          <div className="flex items-center justify-between"><p className="text-xs font-semibold uppercase tracking-widest text-slate-300">Current streak</p><span className="animate-pulse text-xl">🔥</span></div>
-          <p className="mt-3 sm:mt-4 text-2xl sm:text-3xl font-bold text-orange-200">{streak} {streak === 1 ? "day" : "days"}</p>
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-semibold uppercase tracking-widest text-slate-300">Current streak</p>
+            <span className="animate-pulse text-xl">🔥</span>
+          </div>
+          <div className="mt-3 sm:mt-4 flex items-baseline justify-between flex-wrap gap-2">
+            <p className="text-2xl sm:text-3xl font-bold text-orange-200">{streak} {streak === 1 ? "day" : "days"}</p>
+            {shieldStatus.isShieldedToday ? (
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 rounded-full px-2.5 py-0.5" title="Recovery shield is protecting your streak today">
+                🛡️ Shield Active
+              </span>
+            ) : shieldStatus.available ? (
+              <button
+                type="button"
+                onClick={handleClaimShield}
+                className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 hover:bg-emerald-500/25 rounded-full px-2.5 py-0.5 transition active:scale-95"
+                title="Claim 1-day Recovery Shield to protect your streak"
+              >
+                <Shield size={11} />
+                <span>Shield (1/wk)</span>
+              </button>
+            ) : (
+              <span className="text-[10px] text-slate-500">🛡️ Used this week</span>
+            )}
+          </div>
           <div className="mt-4 flex gap-1.5 sm:gap-2">
             {weekDaysInfo.map((day) => (
               <div key={day.date} className="flex flex-col items-center gap-1">
@@ -540,13 +680,15 @@ function Dashboard({
                   className={`grid h-7 w-7 place-items-center rounded-full text-[10px] font-semibold transition-all ${
                     day.isCompleted
                       ? "bg-gradient-to-tr from-amber-400 to-orange-400 text-slate-950 shadow-md shadow-orange-500/40"
+                      : day.isShielded
+                      ? "border border-emerald-400 bg-emerald-500/20 text-emerald-300 ring-2 ring-emerald-400/30 font-bold"
                       : day.isToday
                       ? "border border-amber-400/80 bg-amber-400/15 text-amber-200 ring-2 ring-amber-400/30 font-bold"
                       : "bg-white/5 text-slate-500"
                   }`}
-                  title={`${day.dayName} (${day.date}): ${day.isCompleted ? "Completed" : day.isToday ? "Today" : "No activity"}`}
+                  title={`${day.dayName} (${day.date}): ${day.isCompleted ? "Completed" : day.isShielded ? "Recovery Shield Active 🛡️" : day.isToday ? "Today" : "No activity"}`}
                 >
-                  {day.dayLetter}
+                  {day.isShielded ? "🛡️" : day.dayLetter}
                 </span>
                 {day.isToday && <span className="h-1 w-1 rounded-full bg-amber-400" />}
               </div>
@@ -555,6 +697,8 @@ function Dashboard({
           <p className="mt-4 text-xs text-slate-400">
             {weekDaysInfo.find((d) => d.isToday)?.isCompleted
               ? "Today's win completed! Flame burning bright. 🔥"
+              : weekDaysInfo.find((d) => d.isToday)?.isShielded
+              ? "Recovery Shield active today. Streak preserved! 🛡️"
               : "Complete a win today to keep your streak alive."}
           </p>
         </div>
@@ -614,10 +758,36 @@ function Dashboard({
                 <Flame size={17} className="text-rose-300" />
                 <span>Habit</span>
               </button>
+              <button
+                onClick={() => {
+                  setStrugglingTask(todayTasks.find((t) => !t.completed) || null);
+                  setIsStrugglingModalOpen(true);
+                }}
+                className="col-span-2 flex items-center justify-center gap-2 rounded-xl border border-amber-400/20 bg-amber-400/10 px-3 py-2.5 text-xs font-medium text-amber-200 transition hover:bg-amber-400/20 active:scale-95"
+              >
+                <HeartHandshake size={15} className="text-amber-300" />
+                <span>Struggling with a task? Friction check</span>
+              </button>
             </div>
           </div>
         </div>
       </div>
+
+      {/* Confetti Celebration on completing all tasks */}
+      <ConfettiCelebration
+        trigger={triggerConfetti}
+        onComplete={() => setTriggerConfetti(false)}
+      />
+
+      {/* Personalized Struggling / Friction Check Modal */}
+      <StrugglingModal
+        isOpen={isStrugglingModalOpen}
+        onClose={() => setIsStrugglingModalOpen(false)}
+        task={strugglingTask}
+        onActionComplete={() => {
+          onRefreshShield();
+        }}
+      />
     </section>
   );
 }

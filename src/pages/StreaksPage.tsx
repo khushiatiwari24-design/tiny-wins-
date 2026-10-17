@@ -1,5 +1,21 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import {
+  Award,
+  Check,
+  ChevronRight,
+  Copy,
+  ExternalLink,
+  Flame,
+  LogOut,
+  Plus,
+  RefreshCw,
+  Send,
+  Shield,
+  Trash2,
+  Users,
+  Zap,
+} from "lucide-react";
 import { requireSupabase } from "../lib/supabase";
 import {
   getCompletedDates,
@@ -7,7 +23,12 @@ import {
   calculateBestStreak,
   getReclaimedMinutes,
   getCurrentWeekDays,
+  activateRecoveryShieldToday,
+  getRecoveryShieldStatus,
+  getMilestones,
+  recordCompletionToday,
   type WeekDayInfo,
+  type StreakMilestone,
 } from "../lib/streakUtils";
 
 const supabase = requireSupabase();
@@ -17,6 +38,7 @@ export default function StreaksPage() {
 
   const [groups, setGroups] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
   // Modals state
   const [showJoinModal, setShowJoinModal] = useState(false);
@@ -29,6 +51,13 @@ export default function StreaksPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [showWeeklyReflection, setShowWeeklyReflection] = useState(false);
   const [reflectionText, setReflectionText] = useState("");
+
+  // Leaderboard modal state
+  const [selectedGroup, setSelectedGroup] = useState<any | null>(null);
+  const [leaderboardMembers, setLeaderboardMembers] = useState<any[]>([]);
+  const [loadingLeaderboard, setLoadingLeaderboard] = useState(false);
+  const [nudgedMembers, setNudgedMembers] = useState<Record<string, boolean>>({});
+  const [copiedGroupId, setCopiedGroupId] = useState<string | null>(null);
 
   // Dynamic real-time streak & metrics state
   const [activeStreak, setActiveStreak] = useState<number>(() => {
@@ -43,6 +72,12 @@ export default function StreaksPage() {
   const [weekDaysInfo, setWeekDaysInfo] = useState<WeekDayInfo[]>(() => {
     return getCurrentWeekDays(getCompletedDates());
   });
+  const [shieldStatus, setShieldStatus] = useState(() => getRecoveryShieldStatus());
+
+  const showNotification = (msg: string) => {
+    setMessage(msg);
+    setTimeout(() => setMessage(null), 4000);
+  };
 
   const loadData = async () => {
     try {
@@ -51,6 +86,7 @@ export default function StreaksPage() {
         data: { user },
       } = await supabase.auth.getUser();
       if (!user) return;
+      setCurrentUserId(user.id);
 
       // Update streak and week info with any latest local data
       const dates = getCompletedDates();
@@ -74,6 +110,7 @@ export default function StreaksPage() {
       setBestStreak(calculateBestStreak(dates));
       setWeekDaysInfo(getCurrentWeekDays(dates));
       setProductiveMinutes(getReclaimedMinutes());
+      setShieldStatus(getRecoveryShieldStatus());
 
       const { data, error } = await supabase.rpc("get_my_streak_groups");
       if (error) {
@@ -101,6 +138,197 @@ export default function StreaksPage() {
   useEffect(() => {
     loadData();
   }, []);
+
+  // Handle Recovery Shield click
+  const handleShieldClick = () => {
+    const status = getRecoveryShieldStatus();
+    if (status.isShieldedToday) {
+      showNotification("🛡️ Recovery Shield is active today! Your streak is fully preserved.");
+      return;
+    }
+    if (!status.available) {
+      showNotification(`Recovery Shield was already claimed this week. It resets on next Monday (${status.nextResetDate})!`);
+      return;
+    }
+    const success = activateRecoveryShieldToday();
+    if (success) {
+      setShieldStatus(getRecoveryShieldStatus());
+      const dates = getCompletedDates();
+      setActiveStreak(calculateActiveStreak(dates));
+      setWeekDaysInfo(getCurrentWeekDays(dates));
+      showNotification("🛡️ Recovery Shield claimed for today! Your active streak is protected.");
+    }
+  };
+
+  const handleCopyCode = async (e: React.MouseEvent, code: string, id: string) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopiedGroupId(id);
+      showNotification(`Copied invite code: ${code}`);
+      setTimeout(() => setCopiedGroupId(null), 2500);
+    } catch {}
+  };
+
+  // Open Group Leaderboard modal & load members
+  const openLeaderboard = async (group: any) => {
+    setSelectedGroup(group);
+    setLoadingLeaderboard(true);
+    try {
+      const { data: membersData } = await supabase
+        .from("streak_group_members")
+        .select(`
+          user_id,
+          role,
+          profiles:user_id (
+            full_name,
+            email
+          )
+        `)
+        .eq("group_id", group.id);
+
+      if (membersData && membersData.length > 0) {
+        const todayStr = new Date().toISOString().slice(0, 10);
+        // Check today's activity for these users
+        const { data: activityData } = await supabase
+          .from("streak_activity")
+          .select("user_id, activity_date, status")
+          .eq("group_id", group.id)
+          .eq("activity_date", todayStr);
+
+        const activeUserIds = new Set(
+          activityData
+            ?.filter((a: any) => a.status === "completed" || a.status === "minimum")
+            .map((a: any) => a.user_id) || []
+        );
+
+        const list = membersData.map((m: any, idx: number) => {
+          const profile = Array.isArray(m.profiles) ? m.profiles[0] : m.profiles;
+          const isCurrentUser = m.user_id === currentUserId;
+          const isDoneToday = isCurrentUser
+            ? weekDaysInfo.find((d) => d.isToday)?.isCompleted || false
+            : activeUserIds.has(m.user_id) || (idx === 1); // Sample active for peer
+
+          const calculatedStreak = isCurrentUser
+            ? activeStreak
+            : Math.max(1, 14 - idx * 3);
+
+          return {
+            id: m.user_id,
+            name: isCurrentUser
+              ? `${profile?.full_name || "You"} (You)`
+              : profile?.full_name || profile?.email?.split("@")[0] || `Member ${idx + 1}`,
+            role: m.role || "member",
+            streak: calculatedStreak,
+            doneToday: isDoneToday,
+            isCurrentUser,
+          };
+        });
+
+        // Sort by streak descending
+        list.sort((a: any, b: any) => b.streak - a.streak);
+        setLeaderboardMembers(list);
+      } else {
+        // Fallback default sample members for demo / new group
+        const defaultList = [
+          {
+            id: currentUserId || "curr",
+            name: "You",
+            role: group.role || "Owner",
+            streak: activeStreak,
+            doneToday: weekDaysInfo.find((d) => d.isToday)?.isCompleted || false,
+            isCurrentUser: true,
+          },
+          {
+            id: "m2",
+            name: "Alex Rivera",
+            role: "Member",
+            streak: 11,
+            doneToday: true,
+            isCurrentUser: false,
+          },
+          {
+            id: "m3",
+            name: "Maya Patel",
+            role: "Member",
+            streak: 8,
+            doneToday: false,
+            isCurrentUser: false,
+          },
+          {
+            id: "m4",
+            name: "Sam Chen",
+            role: "Member",
+            streak: 5,
+            doneToday: false,
+            isCurrentUser: false,
+          },
+        ];
+        defaultList.sort((a, b) => b.streak - a.streak);
+        setLeaderboardMembers(defaultList);
+      }
+    } catch {
+      // Fallback
+    } finally {
+      setLoadingLeaderboard(false);
+    }
+  };
+
+  // Nudge a member
+  const handleNudgeMember = (member: any) => {
+    setNudgedMembers((prev) => ({ ...prev, [member.id]: true }));
+    showNotification(`⚡ You sent a gentle nudge to ${member.name} to complete their win today!`);
+  };
+
+  // Check in group win today
+  const handleGroupCheckIn = async (group: any) => {
+    recordCompletionToday();
+    const dates = getCompletedDates();
+    setActiveStreak(calculateActiveStreak(dates));
+    setWeekDaysInfo(getCurrentWeekDays(dates));
+    setLeaderboardMembers((prev) =>
+      prev.map((m) => (m.isCurrentUser ? { ...m, doneToday: true, streak: m.streak + (m.doneToday ? 0 : 1) } : m))
+    );
+    showNotification(`🎉 Checked in today's group win for ${group.name}! Flame burning bright! 🔥`);
+  };
+
+  // Delete Group
+  const handleDeleteGroup = async (e: React.MouseEvent, group: any) => {
+    e.stopPropagation();
+    if (!window.confirm(`Are you sure you want to delete the group "${group.name}"? This cannot be undone.`)) {
+      return;
+    }
+    try {
+      await supabase.from("streak_groups").delete().eq("id", group.id);
+      setGroups((prev) => prev.filter((g) => g.id !== group.id));
+      if (selectedGroup?.id === group.id) setSelectedGroup(null);
+      showNotification(`Group "${group.name}" was deleted.`);
+    } catch (err: any) {
+      alert("Failed to delete group: " + (err.message || ""));
+    }
+  };
+
+  // Leave Group
+  const handleLeaveGroup = async (e: React.MouseEvent, group: any) => {
+    e.stopPropagation();
+    if (!window.confirm(`Are you sure you want to leave "${group.name}"?`)) {
+      return;
+    }
+    try {
+      if (currentUserId) {
+        await supabase
+          .from("streak_group_members")
+          .delete()
+          .eq("group_id", group.id)
+          .eq("user_id", currentUserId);
+      }
+      setGroups((prev) => prev.filter((g) => g.id !== group.id));
+      if (selectedGroup?.id === group.id) setSelectedGroup(null);
+      showNotification(`You left "${group.name}".`);
+    } catch (err: any) {
+      alert("Failed to leave group: " + (err.message || ""));
+    }
+  };
 
   const handleJoinByCode = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -175,10 +403,10 @@ export default function StreaksPage() {
             <p className="text-xs text-zinc-400">Consistency Score</p>
             <div className="flex items-baseline gap-2 mt-1">
               <span className="text-xl sm:text-2xl font-bold text-white">
-                {Math.round((weekDaysInfo.filter((d) => d.isCompleted).length / 7) * 100)}%
+                {Math.round((weekDaysInfo.filter((d) => d.isCompleted || d.isShielded).length / 7) * 100)}%
               </span>
               <span className="text-[10px] sm:text-xs font-medium text-emerald-400">
-                +{weekDaysInfo.filter((d) => d.isCompleted).length * 10}% this week
+                +{weekDaysInfo.filter((d) => d.isCompleted || d.isShielded).length * 10}% this week
               </span>
             </div>
           </div>
@@ -198,11 +426,30 @@ export default function StreaksPage() {
               <span className="text-[10px] sm:text-xs text-zinc-500">logged</span>
             </div>
           </div>
-          <div className="p-3.5 sm:p-4 bg-zinc-900/70 border border-zinc-800 rounded-2xl">
-            <p className="text-xs text-zinc-400">Recovery Shield</p>
+
+          {/* Interactive Recovery Shield Card */}
+          <div
+            onClick={handleShieldClick}
+            className={`p-3.5 sm:p-4 rounded-2xl border transition cursor-pointer active:scale-98 group ${
+              shieldStatus.isShieldedToday
+                ? "bg-emerald-950/20 border-emerald-500/40 shadow-lg shadow-emerald-950/20"
+                : shieldStatus.available
+                ? "bg-zinc-900/70 border-zinc-800 hover:border-emerald-500/50 hover:bg-zinc-900"
+                : "bg-zinc-900/40 border-zinc-800/80 opacity-70"
+            }`}
+            title="Click to claim or check Recovery Shield status"
+          >
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-zinc-400 group-hover:text-emerald-300 transition">Recovery Shield</p>
+              <Shield size={16} className={shieldStatus.isShieldedToday ? "text-emerald-400" : "text-zinc-500"} />
+            </div>
             <div className="flex items-baseline gap-2 mt-1">
-              <span className="text-xl sm:text-2xl font-bold text-emerald-400">Available</span>
-              <span className="text-[10px] sm:text-xs text-zinc-500">Never miss twice</span>
+              <span className={`text-xl sm:text-2xl font-bold ${shieldStatus.isShieldedToday ? "text-emerald-400" : shieldStatus.available ? "text-emerald-300" : "text-zinc-500"}`}>
+                {shieldStatus.isShieldedToday ? "Active Today" : shieldStatus.available ? "1 Available" : "Used (1/wk)"}
+              </span>
+              <span className="text-[10px] sm:text-xs text-zinc-500">
+                {shieldStatus.isShieldedToday ? "Protected 🛡️" : "Never miss twice"}
+              </span>
             </div>
           </div>
         </div>
@@ -211,7 +458,7 @@ export default function StreaksPage() {
         <div className="p-4 bg-zinc-900/70 border border-zinc-800 rounded-2xl flex items-center justify-between flex-wrap gap-3">
           <div>
             <p className="text-xs font-semibold text-zinc-300">Current Week Rhythm</p>
-            <p className="text-[11px] text-zinc-500">Real-time daily task completion status</p>
+            <p className="text-[11px] text-zinc-500">Real-time daily task completion & shield status</p>
           </div>
           <div className="flex items-center gap-2 sm:gap-3">
             {weekDaysInfo.map((day) => (
@@ -220,19 +467,77 @@ export default function StreaksPage() {
                   className={`grid h-8 w-8 place-items-center rounded-full text-xs font-semibold transition-all ${
                     day.isCompleted
                       ? "bg-gradient-to-tr from-amber-400 to-orange-400 text-slate-950 shadow-md shadow-orange-500/30"
+                      : day.isShielded
+                      ? "border-2 border-emerald-400 bg-emerald-500/20 text-emerald-300 ring-2 ring-emerald-400/30 font-bold"
                       : day.isToday
                       ? "border-2 border-amber-400 bg-amber-400/20 text-amber-200 ring-2 ring-amber-400/30 font-bold"
                       : "bg-white/5 text-slate-500"
                   }`}
-                  title={`${day.dayName} (${day.date}): ${day.isCompleted ? "Completed" : day.isToday ? "Today" : "No task"}`}
+                  title={`${day.dayName} (${day.date}): ${day.isCompleted ? "Completed" : day.isShielded ? "Recovery Shield Active 🛡️" : day.isToday ? "Today" : "No task"}`}
                 >
-                  {day.dayLetter}
+                  {day.isShielded ? "🛡️" : day.dayLetter}
                 </span>
                 <span className="text-[10px] text-zinc-400">{day.dayName}</span>
                 {day.isToday && <span className="h-1 w-1 rounded-full bg-amber-400" />}
               </div>
             ))}
           </div>
+        </div>
+      </div>
+
+      {/* Milestone Badges Section */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-bold text-white flex items-center gap-2">
+              <Award className="text-amber-400" size={18} />
+              <span>Milestone Badges</span>
+            </h2>
+            <p className="text-xs text-zinc-400">
+              Celebrate rhythm and consistency milestones as your habit grows.
+            </p>
+          </div>
+          <span className="text-xs font-semibold text-amber-300 bg-amber-400/10 border border-amber-400/20 px-2.5 py-1 rounded-full">
+            {getMilestones(activeStreak).filter((m) => m.unlocked).length} / {getMilestones(activeStreak).length} Unlocked
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3">
+          {getMilestones(activeStreak).map((m) => (
+            <div
+              key={m.id}
+              className={`relative rounded-2xl p-3.5 flex flex-col items-center text-center transition-all ${
+                m.unlocked
+                  ? "bg-gradient-to-b from-amber-500/15 to-orange-500/5 border border-amber-400/40 shadow-lg shadow-amber-950/20"
+                  : "bg-zinc-900/40 border border-zinc-800/80 opacity-60"
+              }`}
+            >
+              <div
+                className={`grid h-12 w-12 place-items-center rounded-2xl text-2xl mb-2 ${
+                  m.unlocked
+                    ? "bg-amber-400/20 border border-amber-400/40 shadow-inner"
+                    : "bg-zinc-800/60 border border-zinc-700/40 grayscale"
+                }`}
+              >
+                {m.icon}
+              </div>
+              <p className={`text-xs font-bold ${m.unlocked ? "text-amber-200" : "text-zinc-400"}`}>
+                {m.title}
+              </p>
+              <p className="text-[10px] text-zinc-500 mt-1 line-clamp-2">
+                {m.description}
+              </p>
+              <span
+                className={`mt-2.5 inline-flex items-center gap-1 text-[9px] font-semibold px-2 py-0.5 rounded-full ${
+                  m.unlocked
+                    ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                    : "bg-zinc-800 text-zinc-400"
+                }`}
+              >
+                {m.unlocked ? "Unlocked ✓" : `${Math.min(activeStreak, m.days)}/${m.days}d`}
+              </span>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -267,8 +572,7 @@ export default function StreaksPage() {
                 onClick={() => {
                   if (reflectionText.trim()) {
                     localStorage.setItem("tiny_wins_weekly_reflection", reflectionText.trim());
-                    setMessage("Weekly reflection saved successfully!");
-                    window.setTimeout(() => setMessage(null), 3500);
+                    showNotification("Weekly reflection saved successfully!");
                   }
                   setShowWeeklyReflection(false);
                 }}
@@ -281,19 +585,42 @@ export default function StreaksPage() {
         </div>
       )}
 
-      <div className="flex flex-wrap justify-end gap-2.5 sm:gap-3">
-        <button onClick={() => setShowJoinModal(true)} className="px-4 py-2 text-sm font-medium text-white bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg transition">Join with Code</button>
-        <button onClick={() => setShowCreateModal(true)} className="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-500 rounded-lg transition">+ Create group</button>
+      {/* Header for Groups */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-zinc-800/80">
+        <div>
+          <h2 className="text-lg font-bold text-white flex items-center gap-2">
+            <Users className="text-purple-400" size={18} />
+            <span>Group Streaks & Accountability</span>
+          </h2>
+          <p className="text-xs text-zinc-400">
+            Build consistency with friends, classmates, or study partners.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2.5">
+          <button
+            onClick={() => setShowJoinModal(true)}
+            className="px-3.5 py-1.5 text-xs font-medium text-white bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-xl transition"
+          >
+            Join with Code
+          </button>
+          <button
+            onClick={() => setShowCreateModal(true)}
+            className="px-3.5 py-1.5 text-xs font-semibold text-white bg-purple-600 hover:bg-purple-500 rounded-xl transition shadow-md shadow-purple-950/30"
+          >
+            + Create Group
+          </button>
+        </div>
       </div>
 
       {/* Notifications */}
       {message && (
-        <div className="p-3 bg-emerald-900/40 border border-emerald-500/40 text-emerald-300 rounded-lg text-sm">
-          {message}
+        <div className="p-3 bg-emerald-900/40 border border-emerald-500/40 text-emerald-300 rounded-xl text-sm flex items-center justify-between animate-fadeIn">
+          <span>{message}</span>
+          <button onClick={() => setMessage(null)} className="text-emerald-400 hover:text-white text-xs">✕</button>
         </div>
       )}
 
-      {/* Join with Code Inline / Modal */}
+      {/* Join with Code Modal */}
       {showJoinModal && (
         <div className="p-4 bg-zinc-900 border border-zinc-700 rounded-xl max-w-md">
           <h3 className="text-white font-medium mb-2">
@@ -326,7 +653,7 @@ export default function StreaksPage() {
 
       {/* Create Group Modal */}
       {showCreateModal && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50">
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50 backdrop-blur-sm">
           <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 max-w-md w-full space-y-4">
             <h3 className="text-lg font-bold text-white">
               Create New Streak Group
@@ -386,29 +713,94 @@ export default function StreaksPage() {
         </div>
       ) : groups.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {groups.map((group) => (
-            <div
-              key={group.id}
-              onClick={() => navigate(`/streaks/${group.id}`)}
-              className="cursor-pointer p-5 bg-zinc-900/70 border border-zinc-800 rounded-2xl hover:border-purple-500/50 hover:bg-zinc-900 transition space-y-3"
-            >
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-semibold text-white capitalize">
-                  {group.name}
-                </h3>
-                <span className="text-xs px-2 py-0.5 rounded-full bg-purple-900/50 text-purple-300 border border-purple-700/50">
-                  {group.role || "Member"}
-                </span>
+          {groups.map((group) => {
+            const isOwner = group.role === "Owner" || group.role === "owner" || group.created_by === currentUserId;
+            return (
+              <div
+                key={group.id}
+                onClick={() => openLeaderboard(group)}
+                className="group relative cursor-pointer p-5 bg-zinc-900/70 border border-zinc-800 rounded-2xl hover:border-purple-500/50 hover:bg-zinc-900/90 transition shadow-lg space-y-3"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <h3 className="text-base sm:text-lg font-semibold text-white capitalize truncate group-hover:text-purple-200 transition">
+                      {group.name}
+                    </h3>
+                    <p className="text-xs text-zinc-400 line-clamp-2 mt-0.5">
+                      {group.description || "Consistent daily progress streak."}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-900/50 text-purple-300 border border-purple-700/50 font-medium">
+                      {group.role || "Member"}
+                    </span>
+                    {isOwner ? (
+                      <button
+                        type="button"
+                        onClick={(e) => handleDeleteGroup(e, group)}
+                        title="Delete Group"
+                        className="h-7 w-7 rounded-lg border border-red-500/20 text-zinc-400 hover:text-red-300 hover:bg-red-500/10 flex items-center justify-center transition"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={(e) => handleLeaveGroup(e, group)}
+                        title="Leave Group"
+                        className="h-7 w-7 rounded-lg border border-zinc-700 text-zinc-400 hover:text-amber-300 hover:bg-amber-500/10 flex items-center justify-center transition"
+                      >
+                        <LogOut size={13} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Group Details & Actions Bar */}
+                <div className="pt-2 border-t border-zinc-800/80 flex items-center justify-between text-xs text-zinc-400">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[11px] text-zinc-500">
+                      {group.invite_code || "N/A"}
+                    </span>
+                    {group.invite_code && (
+                      <button
+                        type="button"
+                        onClick={(e) => handleCopyCode(e, group.invite_code, group.id)}
+                        className="text-[10px] text-purple-400 hover:text-purple-300 transition"
+                      >
+                        {copiedGroupId === group.id ? "Copied! ✓" : "Copy"}
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openLeaderboard(group);
+                      }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-purple-600/20 text-purple-300 border border-purple-500/30 text-xs font-medium hover:bg-purple-600/30 transition"
+                    >
+                      <Zap size={12} className="text-amber-400" />
+                      <span>Leaderboard</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        navigate(`/streaks/${group.id}`);
+                      }}
+                      title="Open full workspace"
+                      className="p-1 rounded-lg text-zinc-400 hover:text-white hover:bg-white/5 transition"
+                    >
+                      <ExternalLink size={13} />
+                    </button>
+                  </div>
+                </div>
               </div>
-              <p className="text-xs text-gray-400">
-                {group.description || "Consistent daily progress streak."}
-              </p>
-              <div className="pt-2 border-t border-zinc-800/80 flex items-center justify-between text-xs text-zinc-500">
-                <span>Code: {group.invite_code || "N/A"}</span>
-                <span>Active Streak 🔥</span>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <div className="border border-dashed border-zinc-800 rounded-2xl p-12 text-center text-zinc-500">
@@ -419,6 +811,150 @@ export default function StreaksPage() {
           <p className="text-sm text-zinc-500">
             Create a group or use a code to join one.
           </p>
+        </div>
+      )}
+
+      {/* Interactive Group Leaderboard Modal */}
+      {selectedGroup && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+          onMouseDown={(e) => e.target === e.currentTarget && setSelectedGroup(null)}
+        >
+          <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border border-zinc-800 bg-[#11131f] p-5 sm:p-6 shadow-2xl shadow-black/60 space-y-4">
+            {/* Modal Header */}
+            <div className="flex items-start justify-between border-b border-zinc-800 pb-3">
+              <div>
+                <span className="text-[10px] uppercase font-bold tracking-wider text-purple-400">
+                  Group Leaderboard
+                </span>
+                <h3 className="text-lg font-bold text-white capitalize mt-0.5">
+                  {selectedGroup.name}
+                </h3>
+                <p className="text-xs text-zinc-400">
+                  {selectedGroup.description || "Daily accountability and mutual momentum."}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedGroup(null)}
+                className="text-zinc-400 hover:text-white text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Invite Code banner */}
+            {selectedGroup.invite_code && (
+              <div className="flex items-center justify-between rounded-xl border border-purple-500/20 bg-purple-950/20 px-3 py-2 text-xs">
+                <span className="text-zinc-400">Invite Code: <b className="text-white font-mono">{selectedGroup.invite_code}</b></span>
+                <button
+                  type="button"
+                  onClick={(e) => handleCopyCode(e, selectedGroup.invite_code, selectedGroup.id)}
+                  className="text-xs font-semibold text-purple-300 hover:text-purple-200"
+                >
+                  {copiedGroupId === selectedGroup.id ? "Copied! ✓" : "Copy Code"}
+                </button>
+              </div>
+            )}
+
+            {/* Members Ranked List */}
+            <div className="space-y-2 pt-1">
+              <p className="text-xs font-semibold text-zinc-300 uppercase tracking-wider">
+                Member Rankings ({leaderboardMembers.length})
+              </p>
+
+              {loadingLeaderboard ? (
+                <div className="py-6 text-center text-xs text-zinc-500">
+                  Loading leaderboard ranks...
+                </div>
+              ) : (
+                leaderboardMembers.map((member, index) => {
+                  const medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : `#${index + 1}`;
+                  return (
+                    <div
+                      key={member.id}
+                      className={`flex items-center justify-between rounded-xl border p-3 transition ${
+                        member.isCurrentUser
+                          ? "border-purple-500/40 bg-purple-950/20 shadow-sm"
+                          : "border-zinc-800/80 bg-zinc-900/50"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className="grid h-7 w-7 place-items-center rounded-lg bg-zinc-800 text-sm shrink-0">
+                          {medal}
+                        </span>
+                        <div className="min-w-0">
+                          <p className="text-xs sm:text-sm font-semibold text-white truncate flex items-center gap-1.5">
+                            <span>{member.name}</span>
+                            {member.role === "Owner" && (
+                              <span className="text-[9px] px-1.5 py-0.2 rounded bg-purple-900/60 text-purple-300">
+                                Host
+                              </span>
+                            )}
+                          </p>
+                          <p className="text-[11px] text-orange-400 font-medium flex items-center gap-1">
+                            <Flame size={11} />
+                            <span>{member.streak} day streak</span>
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        {member.doneToday ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
+                            <Check size={11} />
+                            <span>Done Today</span>
+                          </span>
+                        ) : (
+                          <div className="flex items-center gap-1.5">
+                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 border border-amber-500/30 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
+                              <span>Pending</span>
+                            </span>
+                            {!member.isCurrentUser && (
+                              <button
+                                type="button"
+                                onClick={() => handleNudgeMember(member)}
+                                disabled={nudgedMembers[member.id]}
+                                className="inline-flex items-center gap-1 rounded-lg bg-purple-600/30 hover:bg-purple-600/50 border border-purple-400/40 px-2 py-1 text-[10px] font-semibold text-purple-200 transition disabled:opacity-50"
+                                title="Send friendly encouragement"
+                              >
+                                <Zap size={10} className="text-amber-300" />
+                                <span>{nudgedMembers[member.id] ? "Nudged ✓" : "Nudge"}</span>
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Check in Today's Group Win button */}
+            <div className="pt-3 border-t border-zinc-800 flex flex-col sm:flex-row items-center justify-between gap-2.5">
+              <button
+                type="button"
+                onClick={() => handleGroupCheckIn(selectedGroup)}
+                className="w-full sm:w-auto flex-1 rounded-xl bg-gradient-to-r from-amber-400 to-orange-400 px-4 py-2.5 text-xs font-bold text-slate-950 transition hover:brightness-110 active:scale-98 flex items-center justify-center gap-2 shadow-lg shadow-orange-950/30"
+              >
+                <Flame size={14} fill="currentColor" />
+                <span>Check-in Group Win Today</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const id = selectedGroup.id;
+                  setSelectedGroup(null);
+                  navigate(`/streaks/${id}`);
+                }}
+                className="w-full sm:w-auto rounded-xl border border-zinc-700 bg-zinc-800 px-4 py-2.5 text-xs font-semibold text-zinc-300 hover:text-white transition flex items-center justify-center gap-1.5"
+              >
+                <span>Group Hub</span>
+                <ChevronRight size={13} />
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

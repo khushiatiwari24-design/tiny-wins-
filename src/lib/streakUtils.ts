@@ -16,13 +16,118 @@ export interface WeekDayInfo {
   isPast: boolean;
   isFuture: boolean;
   isCompleted: boolean;
+  isShielded: boolean;
 }
 
 const LOCAL_STORAGE_KEY_STREAK_DATES = "tiny_wins_completed_dates";
 const LOCAL_STORAGE_KEY_RECLAIMED_TIME = "tiny_wins_reclaimed_minutes";
+const LOCAL_STORAGE_KEY_RECOVERY_SHIELDS = "tiny_wins_recovery_shields";
 
 /**
- * Get all dates where at least one task or tiny win was completed
+ * Get all dates where Recovery Shield was activated
+ */
+export const getRecoveryShieldDates = (): Set<string> => {
+  const dates = new Set<string>();
+  try {
+    const raw = localStorage.getItem(LOCAL_STORAGE_KEY_RECOVERY_SHIELDS);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) {
+        for (const d of arr) {
+          if (typeof d === "string") dates.add(d);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("Could not read recovery shields from localStorage:", err);
+  }
+  return dates;
+};
+
+/**
+ * Check if the recovery shield is active today
+ */
+export const isShieldActiveToday = (): boolean => {
+  const today = getLocalDateKey();
+  return getRecoveryShieldDates().has(today);
+};
+
+/**
+ * Get recovery shield weekly status (1 shield per calendar week Mon-Sun)
+ */
+export const getRecoveryShieldStatus = () => {
+  const today = new Date();
+  const todayStr = getLocalDateKey(today);
+  const shieldDates = getRecoveryShieldDates();
+
+  // Find start of current week (Monday)
+  const dayOfWeek = today.getDay();
+  const distanceToMonday = (dayOfWeek + 6) % 7;
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - distanceToMonday);
+  monday.setHours(0, 0, 0, 0);
+
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  sunday.setHours(23, 59, 59, 999);
+
+  let usedCountThisWeek = 0;
+  for (const dateStr of shieldDates) {
+    const d = new Date(`${dateStr}T12:00:00`);
+    if (d >= monday && d <= sunday) {
+      usedCountThisWeek++;
+    }
+  }
+
+  const activeToday = shieldDates.has(todayStr);
+  const available = usedCountThisWeek === 0 || activeToday;
+
+  // Days until Sunday midnight (weekly reset)
+  const daysUntilReset = Math.max(1, 7 - distanceToMonday);
+
+  return {
+    available,
+    activeToday,
+    isShieldedToday: activeToday,
+    usedCountThisWeek,
+    resetsInDays: daysUntilReset,
+    nextResetDate: "Monday",
+  };
+};
+
+/**
+ * Activate the recovery shield for today
+ */
+export const activateRecoveryShieldToday = (): { success: boolean; message: string } => {
+  const today = getLocalDateKey();
+  const shieldDates = getRecoveryShieldDates();
+
+  if (shieldDates.has(today)) {
+    return { success: true, message: "Recovery Shield is already active for today! Your streak is protected." };
+  }
+
+  const status = getRecoveryShieldStatus();
+  if (!status.available && !status.activeToday) {
+    return {
+      success: false,
+      message: `Weekly Recovery Shield already used (1/1 this week). Resets in ${status.resetsInDays} days.`,
+    };
+  }
+
+  try {
+    shieldDates.add(today);
+    localStorage.setItem(LOCAL_STORAGE_KEY_RECOVERY_SHIELDS, JSON.stringify(Array.from(shieldDates)));
+    // Also record in streak dates so streak calculation doesn't drop
+    recordCompletionToday();
+    return { success: true, message: "🛡️ Recovery Shield active today! Your streak is protected." };
+  } catch (err) {
+    console.error("Failed to activate recovery shield:", err);
+    return { success: false, message: "Could not activate shield right now." };
+  }
+};
+
+/**
+ * Get all dates where at least one task, tiny win, or recovery shield was active
  */
 export const getCompletedDates = (tasks: Task[] = []): Set<string> => {
   const dates = new Set<string>();
@@ -52,6 +157,12 @@ export const getCompletedDates = (tasks: Task[] = []): Set<string> => {
     }
   } catch (err) {
     console.warn("Could not read streak dates from localStorage:", err);
+  }
+
+  // 3. Include recovery shield dates so streaks never drop on shielded days
+  const shieldDates = getRecoveryShieldDates();
+  for (const s of shieldDates) {
+    dates.add(s);
   }
 
   return dates;
@@ -151,6 +262,7 @@ export const calculateBestStreak = (completedDates: Set<string>): number => {
 export const getCurrentWeekDays = (completedDates: Set<string>): WeekDayInfo[] => {
   const today = new Date();
   const todayStr = getLocalDateKey(today);
+  const shieldDates = getRecoveryShieldDates();
 
   // Monday is 1, Sunday is 0 -> map Sunday to 7 so Monday is start
   const dayOfWeek = today.getDay(); // 0 is Sunday, 1 is Monday...
@@ -177,6 +289,7 @@ export const getCurrentWeekDays = (completedDates: Set<string>): WeekDayInfo[] =
       isPast: dateStr < todayStr,
       isFuture: dateStr > todayStr,
       isCompleted: completedDates.has(dateStr),
+      isShielded: shieldDates.has(dateStr),
     });
   }
 
@@ -216,3 +329,30 @@ export const formatMinutesToHours = (totalMinutes: number): string => {
   if (hours === 0) return `${mins}m`;
   return `${hours}h ${mins}m`;
 };
+
+export interface StreakMilestone {
+  id: string;
+  days: number;
+  title: string;
+  icon: string;
+  description: string;
+  unlocked: boolean;
+}
+
+export const STREAK_MILESTONES: Omit<StreakMilestone, "unlocked">[] = [
+  { id: "win-1", days: 1, title: "1st Win", icon: "🌱", description: "Completed your first tiny win!" },
+  { id: "spark-3", days: 3, title: "3-Day Spark", icon: "🔥", description: "3 days of continuous momentum." },
+  { id: "rhythm-7", days: 7, title: "7-Day Rhythm", icon: "⚡", description: "A full week of habit excellence." },
+  { id: "momentum-14", days: 14, title: "14-Day Momentum", icon: "🚀", description: "Two straight weeks locked in." },
+  { id: "unstoppable-30", days: 30, title: "30-Day Unstoppable", icon: "🏆", description: "1 full month of daily wins!" },
+  { id: "titan-50", days: 50, title: "50-Day Titan", icon: "🌟", description: "Half a century of consistent action." },
+  { id: "legend-100", days: 100, title: "100-Day Legend", icon: "👑", description: "Mastery of the tiny wins philosophy." },
+];
+
+export const getMilestones = (currentStreak: number): StreakMilestone[] => {
+  return STREAK_MILESTONES.map((m) => ({
+    ...m,
+    unlocked: currentStreak >= m.days,
+  }));
+};
+

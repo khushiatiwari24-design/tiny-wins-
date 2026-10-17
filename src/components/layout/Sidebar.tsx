@@ -2,9 +2,11 @@ import { LogOut, Settings, Sparkles } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import { navLinks } from "./navItems";
+import { getTodayMotivationalQuote } from "../../lib/motivationalQuotes";
 
 export default function Sidebar() {
   const { profile, signOut } = useAuth();
+  const dailyQuote = getTodayMotivationalQuote();
 
   const initials = (profile?.full_name || "U")
     .split(" ")
@@ -67,8 +69,8 @@ export default function Sidebar() {
 
         {/* Motivation quote */}
         <div className="rounded-xl border border-white/5 bg-slate-900/60 p-2.5 text-center">
-          <p className="font-handwriting text-sm text-pink-300">
-            “A better you is built by tiny wins” 💕
+          <p className="font-handwriting text-xs text-pink-300 line-clamp-2">
+            “{dailyQuote.text}” 💕
           </p>
         </div>
 
