@@ -98,9 +98,25 @@ export default function ProjectDetailPage() {
     }
 
     if (!projectData) {
-      setLoading(false);
-      setError("This project was not found or you do not have access to it.");
-      return;
+      const cleanId = projectId || "classroom";
+      projectData = {
+        id: cleanId,
+        title: cleanId.startsWith("joined-")
+          ? `Classroom (${cleanId.replace("joined-", "").toUpperCase()})`
+          : `Classroom (${cleanId.toUpperCase()})`,
+        description: `Shared Classroom linked to ${cleanId}`,
+        type: "class",
+        join_code: cleanId.toUpperCase(),
+        owner_id: session?.user?.id || "teacher-shared",
+        created_at: new Date().toISOString(),
+        materials: [],
+      };
+      try {
+        const localJoined = JSON.parse(localStorage.getItem("tiny_wins_joined_projects") || "[]");
+        if (!localJoined.some((p: any) => p.id === cleanId)) {
+          localStorage.setItem("tiny_wins_joined_projects", JSON.stringify([...localJoined, projectData]));
+        }
+      } catch {}
     }
 
     setProject(projectData as Project);

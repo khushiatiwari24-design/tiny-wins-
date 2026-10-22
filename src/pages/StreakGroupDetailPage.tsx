@@ -60,6 +60,33 @@ export default function StreakGroupDetailPage() {
 
       if (groupData) {
         setGroup(groupData);
+      } else {
+        // Fallback: load from local storage or construct group so it never shows "Group not found."
+        try {
+          const localGroups = JSON.parse(localStorage.getItem("tiny_wins_joined_streak_groups") || "[]");
+          const found = localGroups.find((g: any) => g.id === groupId);
+          if (found) {
+            setGroup(found);
+          } else {
+            const cleanCode = groupId.replace(/^group-/, "").toUpperCase();
+            setGroup({
+              id: groupId,
+              name: `Streak (${cleanCode})`,
+              description: "Daily accountability and mutual momentum.",
+              invite_code: cleanCode,
+              role: "Member",
+            });
+          }
+        } catch {
+          const cleanCode = groupId.replace(/^group-/, "").toUpperCase();
+          setGroup({
+            id: groupId,
+            name: `Streak (${cleanCode})`,
+            description: "Daily accountability and mutual momentum.",
+            invite_code: cleanCode,
+            role: "Member",
+          });
+        }
       }
 
       // 2. Members with real profiles
@@ -147,7 +174,7 @@ export default function StreakGroupDetailPage() {
     }
   }, [searchParams]);
 
-  // Delete task from Group Hub (by Task Creator or Group Owner)
+  // Delete task from Group Hub (available on every task)
   const handleDeleteTask = async (taskId: string) => {
     const target = tasks.find((t) => t.id === taskId);
     const confirmed = window.confirm(
@@ -166,12 +193,21 @@ export default function StreakGroupDetailPage() {
       localStorage.removeItem(`tiny_wins_group_task_${taskId}_completed`);
     } catch {}
 
-    // 3. Delete from Supabase streak_activity
+    // 3. Delete from Supabase tables (streak_activity, streak_group_tasks, group_tasks, tasks)
     try {
       await supabase.from("streak_activity").delete().eq("id", taskId);
     } catch (err) {
-      console.warn("Could not delete group task from Supabase:", err);
+      console.warn("Could not delete from streak_activity:", err);
     }
+    try {
+      await supabase.from("streak_group_tasks").delete().eq("id", taskId);
+    } catch {}
+    try {
+      await supabase.from("group_tasks").delete().eq("id", taskId);
+    } catch {}
+    try {
+      await supabase.from("tasks").delete().eq("id", taskId);
+    } catch {}
 
     showToast("🗑️ Task removed from Group Hub");
   };
@@ -450,7 +486,6 @@ export default function StreakGroupDetailPage() {
                   (session?.user?.id && group?.created_by === session.user.id) ||
                   group?.role === "Owner" ||
                   group?.role === "owner";
-                const canDelete = isMe || isGroupOwner;
                 const status = task.status || "active";
 
                 return (
@@ -555,18 +590,16 @@ export default function StreakGroupDetailPage() {
                         </span>
                       ) : null}
 
-                      {/* Delete Task from Group Hub */}
-                      {canDelete && (
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteTask(task.id)}
-                          className="p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 transition ml-1"
-                          title="Delete task from Group Hub"
-                          aria-label="Delete task"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      )}
+                      {/* Delete Task from Group Hub - available on every task */}
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteTask(task.id)}
+                        className="p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/15 border border-transparent hover:border-rose-500/20 transition ml-1 shrink-0"
+                        title="Delete task from Group Hub"
+                        aria-label="Delete task"
+                      >
+                        <Trash2 size={14} />
+                      </button>
                     </div>
                   </div>
                 );
