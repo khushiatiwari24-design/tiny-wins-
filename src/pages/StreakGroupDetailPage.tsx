@@ -1,8 +1,10 @@
-import React, { useEffect, useState } from "react";
-import { useParams, useNavigate, useLocation } from "react-router-dom";
+import React, { useEffect, useState, useRef } from "react";
+import { useParams, useNavigate, useLocation, useSearchParams } from "react-router-dom";
+import { Trash2, Check, Flame, Sparkles } from "lucide-react";
 import { requireSupabase } from "../lib/supabase";
 import StrugglingModal from "../components/StrugglingModal";
 import { recordCompletionToday } from "../lib/streakUtils";
+import { useAuth } from "../context/AuthContext";
 
 const supabase = requireSupabase();
 
@@ -10,6 +12,9 @@ export default function StreakGroupDetailPage() {
   const params = useParams();
   const location = useLocation();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const { session, profile } = useAuth();
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const rawId = params.id || params.groupId || params.streakId;
   const pathId = location.pathname.split("/").filter(Boolean).pop();
@@ -19,10 +24,16 @@ export default function StreakGroupDetailPage() {
   const [members, setMembers] = useState<any[]>([]);
   const [tasks, setTasks] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(() => session?.user?.id || null);
   const [taskInput, setTaskInput] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [encouragedTaskId, setEncouragedTaskId] = useState<string | null>(null);
+  const [notification, setNotification] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setNotification(msg);
+    window.setTimeout(() => setNotification(null), 3500);
+  };
 
   // Struggling modal state
   const [strugglingTask, setStrugglingTask] = useState<any | null>(null);
@@ -128,6 +139,42 @@ export default function StreakGroupDetailPage() {
   useEffect(() => {
     loadData();
   }, [groupId]);
+
+  useEffect(() => {
+    if (searchParams.get("action") === "add-task") {
+      inputRef.current?.focus();
+      inputRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [searchParams]);
+
+  // Delete task from Group Hub (by Task Creator or Group Owner)
+  const handleDeleteTask = async (taskId: string) => {
+    const target = tasks.find((t) => t.id === taskId);
+    const confirmed = window.confirm(
+      `Are you sure you want to remove "${target?.description || "this task"}" from the Group Hub?`
+    );
+    if (!confirmed) return;
+
+    // 1. Optimistic UI update
+    setTasks((prev) => prev.filter((t) => t.id !== taskId));
+
+    // 2. Local storage cleanup
+    try {
+      const localKey = `tiny_wins_group_${groupId}_tasks`;
+      const local = JSON.parse(localStorage.getItem(localKey) || "[]");
+      localStorage.setItem(localKey, JSON.stringify(local.filter((t: any) => t.id !== taskId)));
+      localStorage.removeItem(`tiny_wins_group_task_${taskId}_completed`);
+    } catch {}
+
+    // 3. Delete from Supabase streak_activity
+    try {
+      await supabase.from("streak_activity").delete().eq("id", taskId);
+    } catch (err) {
+      console.warn("Could not delete group task from Supabase:", err);
+    }
+
+    showToast("🗑️ Task removed from Group Hub");
+  };
 
   const handleAddTask = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -290,6 +337,13 @@ export default function StreakGroupDetailPage() {
 
   return (
     <div className="relative mx-auto max-w-6xl space-y-5 sm:space-y-8 overflow-hidden bg-[radial-gradient(circle_at_top_right,rgba(245,158,11,.12),transparent_32%),radial-gradient(circle_at_bottom_left,rgba(244,114,182,.1),transparent_30%)] p-3.5 sm:p-5 lg:p-8">
+      {/* Toast Notification */}
+      {notification && (
+        <div className="fixed top-6 right-6 z-50 rounded-xl border border-emerald-500/30 bg-[#0f172a]/95 backdrop-blur-md px-4 py-2.5 text-xs font-semibold text-emerald-200 shadow-2xl flex items-center gap-2 animate-fadeIn">
+          <Check size={14} className="text-emerald-400" />
+          <span>{notification}</span>
+        </div>
+      )}
 
       {/* Top Header */}
       <div className="glass-panel relative z-10 overflow-hidden rounded-2xl sm:rounded-[2rem] border-orange-200/15 bg-[linear-gradient(120deg,rgba(91,35,65,.7),rgba(30,41,79,.55))] p-4 sm:p-6 lg:p-8">
@@ -362,6 +416,7 @@ export default function StreakGroupDetailPage() {
             className="bg-grid-pattern interactive-card glass-panel rounded-2xl p-5 flex gap-2"
           >
             <input
+              ref={inputRef}
               type="text"
               value={taskInput}
               onChange={(e) => setTaskInput(e.target.value)}
@@ -389,7 +444,13 @@ export default function StreakGroupDetailPage() {
               </div>
             ) : (
               tasks.map((task) => {
-                const isMe = task.user_id === currentUserId;
+                const isMe = task.user_id === currentUserId || (session?.user?.id && task.user_id === session.user.id);
+                const isGroupOwner =
+                  group?.created_by === currentUserId ||
+                  (session?.user?.id && group?.created_by === session.user.id) ||
+                  group?.role === "Owner" ||
+                  group?.role === "owner";
+                const canDelete = isMe || isGroupOwner;
                 const status = task.status || "active";
 
                 return (
@@ -493,6 +554,19 @@ export default function StreakGroupDetailPage() {
                           🟡 Recovery Day Shield
                         </span>
                       ) : null}
+
+                      {/* Delete Task from Group Hub */}
+                      {canDelete && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteTask(task.id)}
+                          className="p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 transition ml-1"
+                          title="Delete task from Group Hub"
+                          aria-label="Delete task"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
                     </div>
                   </div>
                 );

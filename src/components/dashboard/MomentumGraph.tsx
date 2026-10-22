@@ -59,22 +59,27 @@ export default function MomentumGraph({
         const dayTasks = tasks.filter(
           (t) => t.dueDate === dateStr || t.updatedAt?.slice(0, 10) === dateStr
         );
-        const completed = dayTasks.filter((t) => t.completed).length;
+        const taskCompletedCount = dayTasks.filter((t) => t.completed).length;
+        const hasExternalCompletion = completedDates.has(dateStr);
+        const completedCount = Math.max(taskCompletedCount, hasExternalCompletion ? 1 : 0);
+        const totalDayTasks = Math.max(dayTasks.length, completedCount);
 
-        // If tasks exist, calculate real %; if extra completions recorded, scale gracefully
+        // If tasks exist or completions logged, calculate real percentage; if wins > 0, percentage must never be 0%
         let pct = 0;
-        if (dayTasks.length > 0) {
-          pct = Math.round((completed / dayTasks.length) * 100);
-        } else if (completedDates.has(dateStr)) {
-          pct = 100;
+        if (completedCount > 0) {
+          if (totalDayTasks > 0) {
+            pct = Math.min(100, Math.max(completedCount >= totalDayTasks ? 100 : 50, Math.round((completedCount / totalDayTasks) * 100)));
+          } else {
+            pct = 100;
+          }
         }
 
         points.push({
           date: dateStr,
           dayLabel: dayLetters[i],
           fullDateLabel: `${dayNames[i]}, ${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`,
-          totalTasks: dayTasks.length || (completed > 0 ? completed : 0),
-          completedTasks: completed || (completedDates.has(dateStr) ? 1 : 0),
+          totalTasks: totalDayTasks,
+          completedTasks: completedCount,
           percentage: pct,
         });
       }
@@ -88,13 +93,18 @@ export default function MomentumGraph({
         const dayTasks = tasks.filter(
           (t) => t.dueDate === dateStr || t.updatedAt?.slice(0, 10) === dateStr
         );
-        const completed = dayTasks.filter((t) => t.completed).length;
+        const taskCompletedCount = dayTasks.filter((t) => t.completed).length;
+        const hasExternalCompletion = completedDates.has(dateStr);
+        const completedCount = Math.max(taskCompletedCount, hasExternalCompletion ? 1 : 0);
+        const totalDayTasks = Math.max(dayTasks.length, completedCount);
 
         let pct = 0;
-        if (dayTasks.length > 0) {
-          pct = Math.round((completed / dayTasks.length) * 100);
-        } else if (completedDates.has(dateStr)) {
-          pct = 100;
+        if (completedCount > 0) {
+          if (totalDayTasks > 0) {
+            pct = Math.min(100, Math.max(completedCount >= totalDayTasks ? 100 : 50, Math.round((completedCount / totalDayTasks) * 100)));
+          } else {
+            pct = 100;
+          }
         }
 
         points.push({
@@ -104,8 +114,8 @@ export default function MomentumGraph({
             month: "short",
             day: "numeric",
           }),
-          totalTasks: dayTasks.length || (completed > 0 ? completed : 0),
-          completedTasks: completed || (completedDates.has(dateStr) ? 1 : 0),
+          totalTasks: totalDayTasks,
+          completedTasks: completedCount,
           percentage: pct,
         });
       }
@@ -140,13 +150,29 @@ export default function MomentumGraph({
     const usableWidth = svgWidth - paddingX * 2;
     const usableHeight = svgHeight - paddingY * 2;
 
+    // Scale dynamically relative to max wins in the period (minimum 3)
+    const maxWinsInPeriod = Math.max(
+      3,
+      ...dataPoints.map((d) => d.completedTasks)
+    );
+
     return dataPoints.map((dp, i) => {
       const x =
         paddingX +
         (dataPoints.length === 1 ? usableWidth / 2 : (i / (dataPoints.length - 1)) * usableWidth);
+
+      // Dynamic Y-axis scaling:
+      // If completedTasks > 0, scale relative to maxWinsInPeriod, ensuring even 1 win produces
+      // a prominent, visible upward peak, while 0 wins visibly dips to zero baseline.
+      let normalizedHeightRatio = 0;
+      if (dp.completedTasks > 0) {
+        const winsRatio = dp.completedTasks / maxWinsInPeriod;
+        const pctRatio = dp.percentage / 100;
+        normalizedHeightRatio = Math.min(1, Math.max(winsRatio, pctRatio * 0.85));
+      }
+
       // y=0 is at top, so invert: 100% -> paddingY, 0% -> svgHeight - paddingY
-      const y =
-        svgHeight - paddingY - (dp.percentage / 100) * usableHeight;
+      const y = svgHeight - paddingY - normalizedHeightRatio * usableHeight;
       return { x, y, dp };
     });
   }, [dataPoints, svgWidth, svgHeight, paddingX, paddingY]);

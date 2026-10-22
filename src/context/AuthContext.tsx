@@ -24,6 +24,10 @@ type AuthValue = {
   refreshProfile: () => Promise<void>;
   signOut: () => Promise<void>;
   setLocalUser: (userData: LocalUserData) => void;
+  updateProfile: (updated: {
+    full_name: string;
+    role: "teacher" | "student" | "Teacher" | "Student";
+  }) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthValue | null>(null);
@@ -90,6 +94,102 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const synthetic = createSyntheticSession(storedUser);
     setSession(synthetic);
   }, []);
+
+  const updateProfile = useCallback(
+    async (updated: {
+      full_name: string;
+      role: "teacher" | "student" | "Teacher" | "Student";
+    }) => {
+      const normRole = updated.role.toLowerCase() === "teacher" ? "teacher" : "student";
+      const capitalizedRole = normRole === "teacher" ? "Teacher" : "Student";
+      const name = updated.full_name.trim();
+
+      // 1. Immediately update React state for profile
+      setProfile((prev) => {
+        const id = prev?.id || session?.user?.id || "local-user";
+        const email = prev?.email || session?.user?.email || "";
+        return {
+          id,
+          email,
+          full_name: name,
+          role: normRole,
+        };
+      });
+
+      // 2. Immediately update React state for session
+      setSession((prev) => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          user: {
+            ...prev.user,
+            user_metadata: {
+              ...prev.user.user_metadata,
+              full_name: name,
+              name,
+              role: capitalizedRole,
+            },
+          },
+        };
+      });
+
+      // 3. Immediately sync localStorage
+      try {
+        const currentLocal = localStorage.getItem("tiny_wins_user");
+        const parsed = currentLocal ? JSON.parse(currentLocal) : {};
+        const updatedLocal = {
+          ...parsed,
+          id: parsed.id || session?.user?.id || crypto.randomUUID(),
+          name,
+          email: parsed.email || session?.user?.email || "",
+          role: capitalizedRole,
+        };
+        localStorage.setItem("tiny_wins_user", JSON.stringify(updatedLocal));
+
+        localStorage.setItem(
+          "tiny_wins_profile",
+          JSON.stringify({
+            id: updatedLocal.id,
+            full_name: name,
+            email: updatedLocal.email,
+            role: normRole,
+          })
+        );
+      } catch (e) {
+        console.warn("Could not sync local user storage:", e);
+      }
+
+      // 4. Update Supabase Auth metadata and profiles table asynchronously
+      if (supabase) {
+        try {
+          await supabase.auth.updateUser({
+            data: {
+              full_name: name,
+              role: capitalizedRole,
+            },
+          });
+        } catch (e) {
+          console.warn("Supabase auth updateUser notice:", e);
+        }
+
+        const userId = session?.user?.id;
+        if (userId) {
+          try {
+            await supabase.from("profiles").upsert({
+              id: userId,
+              full_name: name,
+              email: session?.user?.email,
+              role: normRole,
+              updated_at: new Date().toISOString(),
+            });
+          } catch (e) {
+            console.warn("Supabase profiles upsert notice:", e);
+          }
+        }
+      }
+    },
+    [session]
+  );
 
   const refreshProfile = useCallback(async () => {
     // 1. Try Supabase getUser() if configured and not a local synthetic session
@@ -275,7 +375,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ session, profile, loading, refreshProfile, signOut, setLocalUser }}>
+    <AuthContext.Provider
+      value={{
+        session,
+        profile,
+        loading,
+        refreshProfile,
+        signOut,
+        setLocalUser,
+        updateProfile,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

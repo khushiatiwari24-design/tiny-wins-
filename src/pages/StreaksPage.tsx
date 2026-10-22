@@ -30,15 +30,17 @@ import {
   type WeekDayInfo,
   type StreakMilestone,
 } from "../lib/streakUtils";
+import { useAuth } from "../context/AuthContext";
 
 const supabase = requireSupabase();
 
 export default function StreaksPage() {
   const navigate = useNavigate();
+  const { session, profile } = useAuth();
 
   const [groups, setGroups] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(() => session?.user?.id || null);
 
   // Modals state
   const [showJoinModal, setShowJoinModal] = useState(false);
@@ -175,6 +177,12 @@ export default function StreaksPage() {
     setSelectedGroup(group);
     setLoadingLeaderboard(true);
     try {
+      const myId = session?.user?.id || profile?.id || currentUserId || "local-user";
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const groupCheckInKey = `tiny_wins_group_${group.id}_checkin_${todayStr}`;
+      const isGroupCheckedInLocally =
+        typeof window !== "undefined" && localStorage.getItem(groupCheckInKey) === "true";
+
       const { data: membersData } = await supabase
         .from("streak_group_members")
         .select(`
@@ -188,7 +196,6 @@ export default function StreaksPage() {
         .eq("group_id", group.id);
 
       if (membersData && membersData.length > 0) {
-        const todayStr = new Date().toISOString().slice(0, 10);
         // Check today's activity for these users
         const { data: activityData } = await supabase
           .from("streak_activity")
@@ -202,12 +209,18 @@ export default function StreaksPage() {
             .map((a: any) => a.user_id) || []
         );
 
+        let currentUserFound = false;
         const list = membersData.map((m: any, idx: number) => {
-          const profile = Array.isArray(m.profiles) ? m.profiles[0] : m.profiles;
-          const isCurrentUser = m.user_id === currentUserId;
+          const mProf = Array.isArray(m.profiles) ? m.profiles[0] : m.profiles;
+          const isCurrentUser =
+            m.user_id === myId ||
+            (!currentUserFound && idx === 0 && !membersData.some((x: any) => x.user_id === myId));
+
+          if (isCurrentUser) currentUserFound = true;
+
           const isDoneToday = isCurrentUser
-            ? weekDaysInfo.find((d) => d.isToday)?.isCompleted || false
-            : activeUserIds.has(m.user_id) || (idx === 1); // Sample active for peer
+            ? isGroupCheckedInLocally || weekDaysInfo.find((d) => d.isToday)?.isCompleted || false
+            : activeUserIds.has(m.user_id) || idx === 1;
 
           const calculatedStreak = isCurrentUser
             ? activeStreak
@@ -216,8 +229,8 @@ export default function StreaksPage() {
           return {
             id: m.user_id,
             name: isCurrentUser
-              ? `${profile?.full_name || "You"} (You)`
-              : profile?.full_name || profile?.email?.split("@")[0] || `Member ${idx + 1}`,
+              ? `${mProf?.full_name || profile?.full_name || "You"} (You)`
+              : mProf?.full_name || mProf?.email?.split("@")[0] || `Member ${idx + 1}`,
             role: m.role || "member",
             streak: calculatedStreak,
             doneToday: isDoneToday,
@@ -225,18 +238,29 @@ export default function StreaksPage() {
           };
         });
 
-        // Sort by streak descending
+        // If current user wasn't in membersData, prepend them
+        if (!currentUserFound) {
+          list.unshift({
+            id: myId,
+            name: `${profile?.full_name || "You"} (You)`,
+            role: group.role || "Owner",
+            streak: activeStreak,
+            doneToday: isGroupCheckedInLocally || weekDaysInfo.find((d) => d.isToday)?.isCompleted || false,
+            isCurrentUser: true,
+          });
+        }
+
         list.sort((a: any, b: any) => b.streak - a.streak);
         setLeaderboardMembers(list);
       } else {
         // Fallback default sample members for demo / new group
         const defaultList = [
           {
-            id: currentUserId || "curr",
-            name: "You",
+            id: myId,
+            name: `${profile?.full_name || "You"} (You)`,
             role: group.role || "Owner",
             streak: activeStreak,
-            doneToday: weekDaysInfo.find((d) => d.isToday)?.isCompleted || false,
+            doneToday: isGroupCheckedInLocally || weekDaysInfo.find((d) => d.isToday)?.isCompleted || false,
             isCurrentUser: true,
           },
           {
@@ -282,14 +306,63 @@ export default function StreaksPage() {
 
   // Check in group win today
   const handleGroupCheckIn = async (group: any) => {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    // 1. Record in streakUtils (marks today as completed in localStorage)
     recordCompletionToday();
     const dates = getCompletedDates();
-    setActiveStreak(calculateActiveStreak(dates));
+    const newStreak = calculateActiveStreak(dates);
+    setActiveStreak(newStreak);
     setWeekDaysInfo(getCurrentWeekDays(dates));
-    setLeaderboardMembers((prev) =>
-      prev.map((m) => (m.isCurrentUser ? { ...m, doneToday: true, streak: m.streak + (m.doneToday ? 0 : 1) } : m))
-    );
-    showNotification(`🎉 Checked in today's group win for ${group.name}! Flame burning bright! 🔥`);
+
+    // 2. Persist group check-in locally
+    try {
+      localStorage.setItem(`tiny_wins_group_${group.id}_checkin_${todayStr}`, "true");
+    } catch {}
+
+    // 3. Persist to Supabase streak_activity
+    const myId = session?.user?.id || profile?.id || currentUserId || "local-user";
+    if (myId) {
+      try {
+        await supabase.from("streak_activity").insert({
+          group_id: group.id,
+          user_id: myId,
+          action_type: "checkin",
+          description: `Checked in daily win for ${group.name}`,
+          activity_date: todayStr,
+          status: "completed",
+          target_minutes: 30,
+        });
+      } catch (err) {
+        console.warn("Supabase group activity log notice:", err);
+      }
+    }
+
+    // 4. Update leaderboard members immediately in UI
+    setLeaderboardMembers((prev) => {
+      let matched = false;
+      const updated = prev.map((m) => {
+        if (m.isCurrentUser) {
+          matched = true;
+          return {
+            ...m,
+            doneToday: true,
+            streak: m.doneToday ? m.streak : m.streak + 1,
+          };
+        }
+        return m;
+      });
+      if (!matched && updated.length > 0) {
+        updated[0] = {
+          ...updated[0],
+          isCurrentUser: true,
+          doneToday: true,
+          streak: updated[0].doneToday ? updated[0].streak : updated[0].streak + 1,
+        };
+      }
+      return updated;
+    });
+
+    showNotification(`🔥 Group win checked in for ${group.name}! Flame burning bright! 🎉`);
   };
 
   // Delete Group
@@ -933,14 +1006,30 @@ export default function StreaksPage() {
 
             {/* Check in Today's Group Win button */}
             <div className="pt-3 border-t border-zinc-800 flex flex-col sm:flex-row items-center justify-between gap-2.5">
-              <button
-                type="button"
-                onClick={() => handleGroupCheckIn(selectedGroup)}
-                className="w-full sm:w-auto flex-1 rounded-xl bg-gradient-to-r from-amber-400 to-orange-400 px-4 py-2.5 text-xs font-bold text-slate-950 transition hover:brightness-110 active:scale-98 flex items-center justify-center gap-2 shadow-lg shadow-orange-950/30"
-              >
-                <Flame size={14} fill="currentColor" />
-                <span>Check-in Group Win Today</span>
-              </button>
+              {leaderboardMembers.find((m) => m.isCurrentUser)?.doneToday ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const id = selectedGroup.id;
+                    setSelectedGroup(null);
+                    navigate(`/streaks/${id}?action=add-task`);
+                  }}
+                  className="w-full sm:w-auto flex-1 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-2.5 text-xs font-bold text-white transition hover:brightness-110 active:scale-98 flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/30"
+                  title="You are checked in today! Click to add another task to Group Hub"
+                >
+                  <Check size={14} />
+                  <span>✅ Checked In Today (+ Add Another Group Task)</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => handleGroupCheckIn(selectedGroup)}
+                  className="w-full sm:w-auto flex-1 rounded-xl bg-gradient-to-r from-amber-400 to-orange-400 px-4 py-2.5 text-xs font-bold text-slate-950 transition hover:brightness-110 active:scale-98 flex items-center justify-center gap-2 shadow-lg shadow-orange-950/30 animate-pulse"
+                >
+                  <Flame size={14} fill="currentColor" />
+                  <span>🔥 Check-in Group Win Today</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => {
