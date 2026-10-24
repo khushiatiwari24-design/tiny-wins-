@@ -12,12 +12,14 @@ export interface StoredProjectFile {
   uploader_name?: string;
   uploader_id?: string;
   url?: string;
+  data_url?: string;
   isLocalFallback?: boolean;
   metadata?: {
     size?: number;
     mimetype?: string;
     uploader_name?: string;
     url?: string;
+    data_url?: string;
   };
 }
 
@@ -37,24 +39,24 @@ export function getLocalProjectFiles(projectId: string): StoredProjectFile[] {
 export function saveLocalProjectFile(projectId: string, file: StoredProjectFile) {
   try {
     const existing = getLocalProjectFiles(projectId);
-    const updated = [file, ...existing.filter((f) => f.name !== file.name && f.id !== file.id)];
+    const updated = [file, ...existing.filter((f) => f.name !== file.name && f.id !== file.id && f.path !== file.path)];
     localStorage.setItem(`tiny_wins_project_${projectId}_files`, JSON.stringify(updated));
   } catch (e) {
     console.warn("Could not write file to localStorage:", e);
   }
 }
 
-export function removeLocalProjectFile(projectId: string, fileName: string) {
+export function removeLocalProjectFile(projectId: string, identifier: string) {
   try {
     const existing = getLocalProjectFiles(projectId);
-    const updated = existing.filter((f) => f.name !== fileName && f.path !== fileName);
+    const updated = existing.filter((f) => f.name !== identifier && f.path !== identifier && f.id !== identifier);
     localStorage.setItem(`tiny_wins_project_${projectId}_files`, JSON.stringify(updated));
   } catch {}
 }
 
 /**
- * Upload project file with strict 5-second timeout,
- * centralized Supabase metadata persistence, and instant offline/local fallback.
+ * Upload project file with resilient Base64 FileReader fallback,
+ * Supabase storage upload, and centralized JSONB metadata persistence.
  */
 export async function uploadProjectFile(
   projectId: string,
@@ -62,26 +64,30 @@ export async function uploadProjectFile(
   file: File,
   uploaderName?: string
 ): Promise<{ file: StoredProjectFile; message: string; isFallback: boolean }> {
+  if (file.size === 0) {
+    throw new Error("Cannot upload empty file (0 Bytes). Please select a valid document or image.");
+  }
+
   const supabase = requireSupabase();
   const timestamp = Date.now();
   const cleanName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
   const storagePath = `${projectId}/${userId}/${timestamp}_${cleanName}`;
 
-  let uploadSuccess = false;
-
-  // Convert to Data URL (for files under 8MB) for instantaneous offline/fallback preview
-  const fileDataUrlPromise = new Promise<string>((resolve) => {
-    if (file.size > 8 * 1024 * 1024) {
+  // 1. Read valid files with FileReader (readAsDataURL) as resilient persistent fallback
+  const dataUrl = await new Promise<string>((resolve) => {
+    try {
+      const reader = new FileReader();
+      reader.onload = () => resolve((reader.result as string) || "");
+      reader.onerror = () => resolve("");
+      reader.readAsDataURL(file);
+    } catch {
       resolve("");
-      return;
     }
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => resolve("");
-    reader.readAsDataURL(file);
   });
 
-  // Strict 5-second timeout Promise
+  let uploadSuccess = false;
+
+  // 2. Strict 5-second timeout Promise for cloud upload
   const timeoutPromise = new Promise<{ data: null; error: { message: string; isTimeout: boolean } }>((resolve) => {
     window.setTimeout(() => {
       resolve({
@@ -113,18 +119,21 @@ export async function uploadProjectFile(
     uploadError = err;
   }
 
-  const dataUrl = await fileDataUrlPromise;
-
-  // Obtain valid public Supabase storage URL immediately so joined students and creators get working preview
+  // Obtain public Supabase URL if upload succeeded
   let remoteUrl = "";
-  try {
-    const { data: pubData } = supabase.storage.from("project-files").getPublicUrl(storagePath);
-    if (pubData?.publicUrl) remoteUrl = pubData.publicUrl;
-  } catch (err) {
-    console.warn("Could not generate publicUrl:", err);
+  if (uploadSuccess) {
+    try {
+      const { data: pubData } = supabase.storage.from("project-files").getPublicUrl(storagePath);
+      if (pubData?.publicUrl) remoteUrl = pubData.publicUrl;
+    } catch (err) {
+      console.warn("Could not generate publicUrl:", err);
+    }
   }
 
-  const primaryUrl = remoteUrl || dataUrl || (typeof window !== "undefined" ? URL.createObjectURL(file) : "");
+  // If storage upload succeeded, prioritize remoteUrl; otherwise use dataUrl so it is never 0B or lost!
+  const finalUrl = (uploadSuccess && remoteUrl)
+    ? remoteUrl
+    : (dataUrl || remoteUrl || (typeof window !== "undefined" ? URL.createObjectURL(file) : ""));
 
   const fileMetadata: StoredProjectFile = {
     id: `file-${timestamp}-${cleanName}`,
@@ -133,7 +142,8 @@ export async function uploadProjectFile(
     size: file.size,
     mimetype: file.type || "application/octet-stream",
     type: file.type || "application/octet-stream",
-    url: primaryUrl,
+    url: finalUrl,
+    data_url: dataUrl,
     created_at: new Date().toISOString(),
     uploaded_at: new Date().toISOString(),
     uploader_name: uploaderName || "Teacher",
@@ -143,11 +153,12 @@ export async function uploadProjectFile(
       size: file.size,
       mimetype: file.type || "application/octet-stream",
       uploader_name: uploaderName || "Teacher",
-      url: primaryUrl,
+      url: finalUrl,
+      data_url: dataUrl,
     },
   };
 
-  // 1. Centralized Metadata Persistence in Supabase `projects` row
+  // 3. Centralized Metadata Persistence in Supabase `projects` row
   try {
     const { data: projData } = await supabase
       .from("projects")
@@ -159,13 +170,13 @@ export async function uploadProjectFile(
       const existingFiles: any[] = Array.isArray(projData.files) ? projData.files : [];
       const updatedFiles = [
         fileMetadata,
-        ...existingFiles.filter((f) => f.name !== fileMetadata.name && f.id !== fileMetadata.id),
+        ...existingFiles.filter((f) => f.name !== fileMetadata.name && f.id !== fileMetadata.id && f.path !== fileMetadata.path),
       ];
 
       const existingMaterials: any[] = Array.isArray(projData.materials) ? projData.materials : [];
       const updatedMaterials = [
         fileMetadata,
-        ...existingMaterials.filter((m) => m.name !== fileMetadata.name && m.id !== fileMetadata.id),
+        ...existingMaterials.filter((m) => m.name !== fileMetadata.name && m.id !== fileMetadata.id && m.path !== fileMetadata.path),
       ];
 
       await supabase
@@ -181,7 +192,7 @@ export async function uploadProjectFile(
     console.warn("Could not sync metadata into projects row:", err);
   }
 
-  // 2. Also attempt insert into dedicated project_files table if present
+  // 4. Also attempt insert into dedicated project_files table if present
   try {
     await supabase.from("project_files").insert({
       project_id: projectId,
@@ -196,7 +207,7 @@ export async function uploadProjectFile(
     });
   } catch {}
 
-  // 3. Cache locally for instant availability
+  // 5. Cache locally for instant availability
   saveLocalProjectFile(projectId, fileMetadata);
 
   if (uploadSuccess) {
@@ -209,7 +220,7 @@ export async function uploadProjectFile(
     const errorMsg = uploadError?.message || "Storage timeout";
     return {
       file: fileMetadata,
-      message: `File saved locally (fast fallback activated: ${errorMsg}). Ready to view!`,
+      message: `File saved locally with full data preview (fallback active: ${errorMsg}). Ready to view!`,
       isFallback: true,
     };
   }
@@ -217,11 +228,7 @@ export async function uploadProjectFile(
 
 /**
  * Robust Fetching on Mount & on "Sync Materials" Click:
- * 1. Checks projects row files/materials JSONB in Supabase (primary shared source)
- * 2. Checks project_files table
- * 3. Checks Supabase storage listing
- * 4. Merges and deduplicates with localStorage
- * 5. Guarantees valid public URL for all items
+ * Merges projects table JSONB, project_files table, and storage listing.
  */
 export async function fetchProjectFiles(
   projectId: string,
@@ -290,6 +297,7 @@ export async function fetchProjectFiles(
             mimetype: row.mime_type || row.mimetype || row.metadata?.mimetype,
             created_at: row.created_at,
             url: row.url || row.metadata?.url,
+            data_url: row.metadata?.data_url,
             uploader_name: row.uploader_name || row.metadata?.uploader_name,
           });
         }
@@ -346,22 +354,27 @@ export async function fetchProjectFiles(
     } else {
       const existing = fileMap.get(f.name)!;
       if (!existing.url && f.url) {
-        fileMap.set(f.name, { ...existing, url: f.url });
+        fileMap.set(f.name, { ...existing, url: f.url, data_url: f.data_url || existing.data_url });
       }
     }
   });
 
-  // 5. Ensure valid public URLs for all files
+  // 5. Ensure valid public URLs or data URLs for all files
   const merged = Array.from(fileMap.values()).map((file) => {
-    if ((!file.url || file.url.trim() === "") && file.path) {
+    let resolvedUrl = file.url || file.metadata?.url || file.data_url || "";
+    if ((!resolvedUrl || resolvedUrl.trim() === "") && file.path) {
       try {
         const { data: pubData } = supabase.storage.from("project-files").getPublicUrl(file.path);
         if (pubData?.publicUrl) {
-          return { ...file, url: pubData.publicUrl };
+          resolvedUrl = pubData.publicUrl;
         }
       } catch {}
     }
-    return file;
+    return {
+      ...file,
+      url: resolvedUrl,
+      size: file.size ?? file.metadata?.size,
+    };
   });
 
   // Cache locally
@@ -375,10 +388,13 @@ export async function fetchProjectFiles(
 export async function deleteProjectFile(
   projectId: string,
   fileName: string,
-  filePath: string
+  filePath: string,
+  fileId?: string | null
 ) {
   const supabase = requireSupabase();
   removeLocalProjectFile(projectId, fileName);
+  if (fileId) removeLocalProjectFile(projectId, fileId);
+  if (filePath) removeLocalProjectFile(projectId, filePath);
 
   try {
     const { data: projData } = await supabase
@@ -388,8 +404,12 @@ export async function deleteProjectFile(
       .maybeSingle();
 
     if (projData) {
-      const updatedFiles = (projData.files || []).filter((f: any) => f.name !== fileName && f.path !== filePath);
-      const updatedMaterials = (projData.materials || []).filter((m: any) => m.name !== fileName && m.path !== filePath);
+      const updatedFiles = (projData.files || []).filter(
+        (f: any) => f.name !== fileName && f.path !== filePath && (!fileId || f.id !== fileId)
+      );
+      const updatedMaterials = (projData.materials || []).filter(
+        (m: any) => m.name !== fileName && m.path !== filePath && (!fileId || m.id !== fileId)
+      );
       await supabase.from("projects").update({
         files: updatedFiles,
         materials: updatedMaterials,
@@ -400,9 +420,14 @@ export async function deleteProjectFile(
 
   try {
     await supabase.from("project_files").delete().eq("project_id", projectId).eq("name", fileName);
+    if (fileId) {
+      await supabase.from("project_files").delete().eq("project_id", projectId).eq("id", fileId);
+    }
   } catch {}
 
   try {
-    await supabase.storage.from("project-files").remove([filePath]);
+    if (filePath) {
+      await supabase.storage.from("project-files").remove([filePath]);
+    }
   } catch {}
 }

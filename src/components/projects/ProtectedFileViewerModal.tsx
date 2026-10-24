@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, FileText, Lock, ShieldAlert, X } from "lucide-react";
+import { AlertTriangle, FileText, Lock, ShieldAlert, Trash2, X } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 
 export interface ProtectedFileViewerModalProps {
@@ -8,9 +8,11 @@ export interface ProtectedFileViewerModalProps {
   content?: string; // For notes or inline text
   fileUrl?: string; // For files
   fileMimeType?: string;
+  fileSize?: number;
   authorName?: string;
   createdAt?: string;
   onClose: () => void;
+  onDelete?: () => void;
 }
 
 export default function ProtectedFileViewerModal({
@@ -19,58 +21,68 @@ export default function ProtectedFileViewerModal({
   content,
   fileUrl,
   fileMimeType = "application/pdf",
+  fileSize,
   authorName,
   createdAt,
   onClose,
+  onDelete,
 }: ProtectedFileViewerModalProps) {
   const { profile } = useAuth();
-  // 1. Initial isBlurred = false on modal mount
   const [isBlurred, setIsBlurred] = useState(false);
   const [shortcutViolation, setShortcutViolation] = useState<string | null>(null);
   const [textContent, setTextContent] = useState<string | null>(null);
   const [officeEmbedFailed, setOfficeEmbedFailed] = useState(false);
 
-  const userName = profile?.full_name || "Authorized Student";
   const userEmail = profile?.email || "student@tinywins.app";
-  const timestamp = new Date().toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
 
-  // Determine file format based on extension & MIME type
-  const cleanTitle = (title || "").toLowerCase();
-  const cleanUrl = (fileUrl || "").toLowerCase();
-  const fileExt = (cleanTitle.split(".").pop() || cleanUrl.split(".").pop() || "").split("?")[0];
+  const fileName = title || "Document";
+  const url = fileUrl || "";
   const mime = (fileMimeType || "").toLowerCase();
 
+  // 1. Detect empty or unavailable files
+  const isEmptyOrUnavailable =
+    fileSize === 0 ||
+    !url ||
+    url.trim() === "" ||
+    url === "null" ||
+    url === "undefined";
+
+  // 2. Multi-Format Detection
   const isImage =
-    mime.startsWith("image/") ||
-    ["jpg", "jpeg", "png", "webp", "gif", "svg", "bmp", "ico"].includes(fileExt);
+    mime.includes("image") ||
+    /\.(jpg|jpeg|png|webp|gif|svg)$/i.test(fileName) ||
+    /\.(jpg|jpeg|png|webp|gif|svg)/i.test(url) ||
+    url.startsWith("data:image");
 
-  const isPdf = mime === "application/pdf" || fileExt === "pdf";
+  const isPdf =
+    mime.includes("pdf") ||
+    /\.pdf$/i.test(fileName) ||
+    /\.pdf/i.test(url) ||
+    url.startsWith("data:application/pdf");
 
-  const isPowerPoint =
-    ["pptx", "ppt", "odp"].includes(fileExt) ||
+  const isOfficeDoc =
+    /\.(ppt|pptx|doc|docx)$/i.test(fileName) ||
+    /\.(ppt|pptx|doc|docx)/i.test(url) ||
     mime.includes("powerpoint") ||
-    mime.includes("presentation");
-
-  const isWordDoc =
-    ["docx", "doc", "odt", "rtf"].includes(fileExt) ||
+    mime.includes("presentation") ||
     mime.includes("wordprocessingml") ||
     mime.includes("msword");
 
-  const isOfficeDoc = isPowerPoint || isWordDoc;
+  const isPowerPoint =
+    /\.(ppt|pptx)$/i.test(fileName) ||
+    /\.(ppt|pptx)/i.test(url) ||
+    mime.includes("powerpoint") ||
+    mime.includes("presentation");
 
   const isText =
     type === "note" ||
-    mime.startsWith("text/") ||
-    ["txt", "md", "csv", "json", "xml", "log", "ts", "js"].includes(fileExt);
+    mime.includes("text") ||
+    /\.(txt|md|markdown|json|csv|log)$/i.test(fileName);
 
   // Fetch text content if text file and content not pre-supplied
   useEffect(() => {
-    if (isText && fileUrl && !content && !fileUrl.startsWith("data:")) {
-      fetch(fileUrl)
+    if (isText && url && !content && !url.startsWith("data:")) {
+      fetch(url)
         .then((res) => {
           if (res.ok) return res.text();
           throw new Error("Unable to fetch text file");
@@ -78,7 +90,7 @@ export default function ProtectedFileViewerModal({
         .then((text) => setTextContent(text))
         .catch(() => {});
     }
-  }, [isText, fileUrl, content]);
+  }, [isText, url, content]);
 
   // Anti-Screenshot & Shortcut interception
   useEffect(() => {
@@ -152,14 +164,12 @@ export default function ProtectedFileViewerModal({
       if (document.visibilityState === "hidden") {
         setIsBlurred(true);
       } else if (document.visibilityState === "visible") {
-        // Automatically unblur when user returns to this window
         setIsBlurred(false);
         setShortcutViolation(null);
       }
     };
 
     const handleWindowFocus = () => {
-      // Immediately unblur on focus
       setIsBlurred(false);
       setShortcutViolation(null);
     };
@@ -175,7 +185,6 @@ export default function ProtectedFileViewerModal({
     };
   }, [onClose]);
 
-  // Click anywhere to immediately unblur
   const handleModalClick = () => {
     if (isBlurred) {
       setIsBlurred(false);
@@ -184,7 +193,7 @@ export default function ProtectedFileViewerModal({
   };
 
   const isRemoteHttp = Boolean(
-    fileUrl && (fileUrl.startsWith("http://") || fileUrl.startsWith("https://"))
+    url && (url.startsWith("http://") || url.startsWith("https://"))
   );
 
   return (
@@ -230,7 +239,7 @@ export default function ProtectedFileViewerModal({
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <p className="truncate text-sm sm:text-base font-semibold text-white">
-                  {title}
+                  {fileName}
                 </p>
                 <span className="rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[9px] font-medium text-emerald-300 shrink-0">
                   Protected View
@@ -240,18 +249,36 @@ export default function ProtectedFileViewerModal({
                 {type === "note" ? "Secure Study Material" : "Protected Document"}
                 {authorName ? ` • By ${authorName}` : ""}
                 {createdAt ? ` • ${createdAt}` : ""}
+                {fileSize !== undefined && fileSize > 0 ? ` • ${(fileSize / 1024).toFixed(1)} KB` : ""}
               </p>
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex h-9 w-9 items-center justify-center rounded-xl text-slate-400 hover:bg-white/[.08] hover:text-white transition cursor-pointer shrink-0"
-            aria-label="Close viewer"
-          >
-            <X size={18} />
-          </button>
+          <div className="flex items-center gap-2">
+            {onDelete && (
+              <button
+                type="button"
+                onClick={() => {
+                  onDelete();
+                  onClose();
+                }}
+                className="flex h-9 items-center gap-1.5 px-3 rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition cursor-pointer text-xs font-medium"
+                title="Delete this file"
+              >
+                <Trash2 size={14} />
+                <span className="hidden sm:inline">Delete</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex h-9 w-9 items-center justify-center rounded-xl text-slate-400 hover:bg-white/[.08] hover:text-white transition cursor-pointer shrink-0"
+              aria-label="Close viewer"
+            >
+              <X size={18} />
+            </button>
+          </div>
         </div>
 
         {/* Security Warning Notification Banner */}
@@ -293,7 +320,7 @@ export default function ProtectedFileViewerModal({
               </h3>
               <p className="mt-2 text-xs sm:text-sm text-slate-400 max-w-lg leading-relaxed">
                 {shortcutViolation ||
-                  "This study material is view-only within Tiny Wins. Screen capture tools, snipping tools, and saving are prohibited to protect course intellectual property. Click anywhere inside this window to resume reading."}
+                  "This study material is view-only within Tiny Wins. Click anywhere inside this window to resume reading."}
               </p>
               <button
                 type="button"
@@ -309,106 +336,114 @@ export default function ProtectedFileViewerModal({
             </div>
           )}
 
-          {/* Actual Multi-Format In-App Document Renderer */}
+          {/* Real Active Document Viewport */}
           <div
-            className="relative z-10 w-full transition-all duration-200"
+            className="relative z-10 w-full h-full flex items-center justify-center transition-all duration-200"
             style={
               isBlurred
                 ? { filter: "blur(28px) brightness(0.2)", userSelect: "none", pointerEvents: "none" }
                 : undefined
             }
           >
-            {type === "note" || (isText && (content || textContent)) ? (
-              /* Plain Text / Notes Renderer */
-              <div className="max-w-3xl mx-auto rounded-2xl bg-white/[.02] border border-white/[.06] p-6 sm:p-8 shadow-xl">
+            {isEmptyOrUnavailable ? (
+              /* Empty File (0 Bytes) or Expired Session Warning */
+              <div className="flex flex-col items-center justify-center p-8 text-center max-w-md mx-auto bg-white/[.04] border border-amber-500/30 rounded-2xl shadow-xl">
+                <div className="mb-4 grid h-14 w-14 place-items-center rounded-2xl bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                  <AlertTriangle size={30} />
+                </div>
+                <h4 className="text-lg font-semibold text-white">{fileName}</h4>
+                <p className="mt-2 text-xs sm:text-sm text-amber-200/90 leading-relaxed">
+                  This file appears empty (0 Bytes) or the session expired. Please re-upload a valid PDF or image.
+                </p>
+                <div className="mt-5 flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-4 py-2 text-xs font-semibold text-white hover:bg-violet-500 transition cursor-pointer"
+                  >
+                    Close & Re-upload
+                  </button>
+                  {onDelete && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onDelete();
+                        onClose();
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/20 px-3 py-2 text-xs font-semibold text-rose-300 hover:bg-rose-500/30 transition cursor-pointer"
+                    >
+                      <Trash2 size={13} />
+                      Delete Corrupted File
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : isImage ? (
+              /* 1. Real Image Viewport */
+              <div className="w-full h-full flex items-center justify-center p-4 overflow-auto">
+                <img
+                  src={url}
+                  alt={fileName}
+                  className="max-h-[75vh] max-w-full rounded shadow-md pointer-events-none select-none"
+                  draggable={false}
+                  onContextMenu={(e) => e.preventDefault()}
+                />
+              </div>
+            ) : isPdf ? (
+              /* 2. Real PDF Viewport */
+              <iframe
+                src={`${url}#toolbar=0&navpanes=0&scrollbar=1`}
+                className="w-full h-[75vh] border-0 rounded-lg bg-white pointer-events-auto"
+                title={fileName}
+              />
+            ) : isOfficeDoc ? (
+              /* 3. Real Office Viewport (Word / PowerPoint) */
+              isRemoteHttp && !officeEmbedFailed ? (
+                <iframe
+                  src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(url)}`}
+                  className="w-full h-[75vh] border-0 rounded-lg bg-white pointer-events-auto"
+                  title={fileName}
+                  onError={() => setOfficeEmbedFailed(true)}
+                />
+              ) : (
+                <div className="flex flex-col items-center justify-center p-8 text-center max-w-lg mx-auto bg-white/[.04] border border-white/[.08] rounded-2xl shadow-xl">
+                  <div className="h-14 w-14 rounded-2xl bg-violet-500/20 text-violet-300 flex items-center justify-center mb-4 border border-violet-500/30">
+                    <FileText size={30} />
+                  </div>
+                  <h4 className="text-lg font-semibold text-white">{fileName}</h4>
+                  <span className="mt-2 px-3 py-1 rounded-full text-xs bg-violet-500/20 text-violet-300 border border-violet-500/30 font-medium">
+                    {isPowerPoint ? "Protected Slide Presentation" : "Protected Document"}
+                  </span>
+                  <p className="mt-4 text-xs sm:text-sm text-zinc-300 leading-relaxed">
+                    Local preview mode active. Slide deck and document outline are secured within your classroom workspace.
+                  </p>
+                </div>
+              )
+            ) : isText ? (
+              /* 4. Formatted, Scrollable Markdown / Notes Reader */
+              <div className="max-w-3xl mx-auto w-full rounded-2xl bg-white/[.02] border border-white/[.06] p-6 sm:p-8 shadow-xl max-h-[75vh] overflow-auto">
                 <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-cyan-300 mb-4">
                   <FileText size={15} />
                   <span>Confidential Course Study Material</span>
                 </div>
                 <h1 className="text-xl sm:text-2xl font-bold text-white mb-6">
-                  {title}
+                  {fileName}
                 </h1>
                 <div
                   className="whitespace-pre-wrap font-sans text-sm sm:text-base leading-relaxed text-slate-200 select-none"
                   style={{ userSelect: "none", WebkitUserSelect: "none" }}
                   onContextMenu={(e) => e.preventDefault()}
                 >
-                  {content || textContent || "No note content recorded."}
+                  {content || textContent || "No text content recorded."}
                 </div>
               </div>
-            ) : fileUrl ? (
-              <div className="flex items-center justify-center w-full">
-                {isImage ? (
-                  /* 1. Images (jpg, png, webp, gif, svg) */
-                  <img
-                    src={fileUrl}
-                    alt={title}
-                    className="max-h-[75vh] max-w-full object-contain mx-auto select-none pointer-events-none rounded-lg shadow-2xl"
-                    draggable={false}
-                    onContextMenu={(e) => e.preventDefault()}
-                  />
-                ) : isPdf ? (
-                  /* 2. PDFs (.pdf) */
-                  <div className="relative h-[75vh] w-full max-w-5xl rounded-xl overflow-hidden border border-white/10 bg-slate-900 shadow-2xl">
-                    <iframe
-                      src={`${fileUrl}#toolbar=0&navpanes=0&scrollbar=1`}
-                      className="w-full h-[75vh] border-0 rounded-lg pointer-events-auto"
-                      title={title}
-                    />
-                  </div>
-                ) : isOfficeDoc ? (
-                  /* 3. PowerPoint & Word Documents (.pptx, .ppt, .docx) */
-                  isRemoteHttp && !officeEmbedFailed ? (
-                    <div className="relative h-[75vh] w-full max-w-5xl rounded-xl overflow-hidden border border-white/10 bg-slate-900 shadow-2xl">
-                      <iframe
-                        src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(
-                          fileUrl
-                        )}`}
-                        className="w-full h-[75vh] border-0 rounded-lg pointer-events-auto"
-                        title={title}
-                        onError={() => setOfficeEmbedFailed(true)}
-                      />
-                    </div>
-                  ) : (
-                    /* Fallback for local blobs or if remote office viewer cannot reach local preview */
-                    <div className="flex flex-col items-center justify-center p-8 text-center max-w-lg mx-auto bg-white/[.04] border border-white/[.08] rounded-2xl shadow-xl">
-                      <div className="h-14 w-14 rounded-2xl bg-violet-500/20 text-violet-300 flex items-center justify-center mb-4 border border-violet-500/30">
-                        <FileText size={30} />
-                      </div>
-                      <h4 className="text-lg font-semibold text-white">{title}</h4>
-                      <span className="mt-2 px-3 py-1 rounded-full text-xs bg-violet-500/20 text-violet-300 border border-violet-500/30 font-medium">
-                        {isPowerPoint ? "Protected Slide Presentation" : "Protected Document"}
-                      </span>
-                      <p className="mt-4 text-xs sm:text-sm text-zinc-300 leading-relaxed">
-                        Presentation outline active. Material is protected within your classroom workspace.
-                      </p>
-                      <div className="mt-5 w-full rounded-xl bg-black/40 p-4 text-left border border-white/[.06] text-xs text-zinc-400 space-y-2">
-                        <p className="text-zinc-200 font-semibold flex items-center gap-1.5">
-                          <Lock size={13} className="text-amber-400" /> Protected Slide Deck & Notes
-                        </p>
-                        <p className="text-zinc-300">• Direct downloading and screen extraction are disabled</p>
-                        <p className="text-zinc-300">• Synchronized across joined classroom members</p>
-                        <p className="text-zinc-400 text-[11px]">
-                          Office Web Viewer renders automatically once cloud sync is verified.
-                        </p>
-                      </div>
-                    </div>
-                  )
-                ) : (
-                  /* Generic File Preview Fallback */
-                  <div className="flex flex-col items-center justify-center p-8 text-center max-w-md mx-auto bg-white/[.04] border border-white/[.08] rounded-2xl">
-                    <FileText size={48} className="mx-auto mb-3 text-cyan-300" />
-                    <p className="text-white font-medium">{title}</p>
-                    <p className="text-xs text-slate-500 mt-2">
-                      Protected study document viewable in Tiny Wins. Direct downloading is restricted by workspace security policy.
-                    </p>
-                  </div>
-                )}
-              </div>
             ) : (
-              <p className="text-center text-slate-500 py-12">
-                Unable to load protected content preview.
-              </p>
+              /* 5. Direct Active Iframe Viewport (Replaces Static Card) */
+              <iframe
+                src={url}
+                className="w-full h-[75vh] border-0 rounded-lg bg-white pointer-events-auto"
+                title={fileName}
+              />
             )}
           </div>
         </div>

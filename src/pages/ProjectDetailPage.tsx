@@ -333,6 +333,13 @@ export default function ProjectDetailPage() {
   const uploadFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file || !projectId || !session || uploading) return;
+
+    if (file.size === 0) {
+      setError("The selected file appears empty (0 Bytes). Please choose a valid document or image.");
+      event.target.value = "";
+      return;
+    }
+
     setUploading(true);
     setError("");
 
@@ -345,7 +352,7 @@ export default function ProjectDetailPage() {
         uploaderName
       );
 
-      setFiles((prev) => [storedFile, ...prev.filter((f) => f.name !== storedFile.name)]);
+      setFiles((prev) => [storedFile, ...prev.filter((f) => f.name !== storedFile.name && f.id !== storedFile.id)]);
       setNotice(message);
       window.setTimeout(() => setNotice(""), 4000);
       void loadFiles(projectId, members.map((m) => m.user_id));
@@ -361,7 +368,7 @@ export default function ProjectDetailPage() {
   const openFile = async (file: StoredFile) => {
     if (!projectId) return;
 
-    let targetUrl = file.url;
+    let targetUrl = file.url || file.metadata?.url;
     if (!targetUrl && file.path) {
       try {
         const { data: pubData } = requireSupabase().storage.from("project-files").getPublicUrl(file.path);
@@ -386,7 +393,8 @@ export default function ProjectDetailPage() {
         if (pubData?.publicUrl) {
           setPreview({ file, url: pubData.publicUrl });
         } else {
-          setError(`Unable to preview file: ${downloadError?.message || "File unavailable"}`);
+          // If no URL available, still set preview so modal shows the informative 0-byte/expired warning
+          setPreview({ file, url: "" });
         }
       }
     } catch (err: any) {
@@ -394,7 +402,7 @@ export default function ProjectDetailPage() {
       if (pubData?.publicUrl) {
         setPreview({ file, url: pubData.publicUrl });
       } else {
-        setError(`Unable to preview file: ${err?.message || "Storage error"}`);
+        setPreview({ file, url: "" });
       }
     }
   };
@@ -404,9 +412,12 @@ export default function ProjectDetailPage() {
     const confirmed = window.confirm(`Are you sure you want to delete "${file.name}"?`);
     if (!confirmed) return;
 
-    setFiles((prev) => prev.filter((f) => f.name !== file.name && f.path !== file.path));
+    setFiles((prev) => prev.filter((f) => f.name !== file.name && f.path !== file.path && f.id !== file.id));
+    if (preview?.file.name === file.name || preview?.file.id === file.id) {
+      setPreview(null);
+    }
     try {
-      await deleteProjectFile(projectId, file.name, file.path);
+      await deleteProjectFile(projectId, file.name, file.path, file.id);
     } catch (err) {
       console.warn("Could not remove file:", err);
     }
@@ -671,9 +682,11 @@ export default function ProjectDetailPage() {
         type="file"
         fileUrl={preview.url}
         fileMimeType={fileMimeType(preview.file)}
+        fileSize={preview.file.metadata?.size || preview.file.size}
         authorName={preview.file.uploader_name || ownerProfile?.full_name || "Teacher"}
         createdAt={preview.file.created_at ? formatDate(preview.file.created_at) : undefined}
         onClose={() => setPreview(null)}
+        onDelete={() => void deleteFile(preview.file)}
       />
     )}
     {viewingNote && (
@@ -803,17 +816,15 @@ function FilesSection({
                     <span>Protected View</span>
                   </button>
 
-                  {isUserOwner && (
-                    <button
-                      type="button"
-                      onClick={() => onDelete(file)}
-                      className="p-1.5 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition cursor-pointer"
-                      title="Delete file"
-                      aria-label="Delete file"
-                    >
-                      <Trash2 size={15} />
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => onDelete(file)}
+                    className="p-1.5 text-rose-400 hover:text-rose-200 hover:bg-rose-500/20 rounded-lg border border-rose-500/30 transition cursor-pointer"
+                    title="Delete file"
+                    aria-label="Delete file"
+                  >
+                    <Trash2 size={15} />
+                  </button>
                 </div>
               </div>
             );

@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { requireSupabase } from "../lib/supabase";
 import ProtectedFileViewerModal from "../components/projects/ProtectedFileViewerModal";
+import { deleteProjectFile } from "../lib/projectFiles";
 
 type Project = {
 	id: string;
@@ -67,7 +68,38 @@ export default function ProjectsPage() {
 	const [loading, setLoading] = useState(true);
 	const [saving, setSaving] = useState(false);
 	const [copiedId, setCopiedId] = useState<string | null>(null);
-	const [previewFile, setPreviewFile] = useState<{ name: string; url?: string; type?: string } | null>(null);
+	const [previewFile, setPreviewFile] = useState<{
+		name: string;
+		url?: string;
+		type?: string;
+		size?: number;
+		projectId?: string;
+		path?: string;
+		id?: string;
+	} | null>(null);
+
+	const handleDeleteFileFromCard = async (projId: string, file: any) => {
+		const confirmed = window.confirm(`Are you sure you want to delete "${file.name}"?`);
+		if (!confirmed) return;
+		try {
+			await deleteProjectFile(projId, file.name, file.path || file.name, file.id);
+			setProjects((prev) =>
+				prev.map((p) =>
+					p.id === projId
+						? {
+								...p,
+								files: (p.files || []).filter(
+									(f) => f.name !== file.name && f.id !== file.id && f.path !== file.path
+								),
+						  }
+						: p
+				)
+			);
+			setPreviewFile(null);
+		} catch (e) {
+			console.warn("Delete file error:", e);
+		}
+	};
 
 	const currentUser = session?.user
 		? {
@@ -560,7 +592,17 @@ export default function ProjectsPage() {
 												<button
 													key={idx}
 													type="button"
-													onClick={() => setPreviewFile({ name: f.name, url: f.url, type: f.type || f.mimetype })}
+													onClick={() =>
+														setPreviewFile({
+															name: f.name,
+															url: f.url,
+															type: f.type || f.mimetype,
+															size: f.size ?? f.metadata?.size,
+															projectId: project.id,
+															path: f.path,
+															id: f.id,
+														})
+													}
 													className="inline-flex items-center gap-1 rounded-md bg-white/[.04] hover:bg-violet-500/20 px-2 py-0.5 text-[11px] text-zinc-300 hover:text-violet-200 border border-white/[.06] transition cursor-pointer max-w-[140px]"
 													title={`Protected study preview: ${f.name}`}
 												>
@@ -645,7 +687,13 @@ export default function ProjectsPage() {
 					type="file"
 					fileUrl={previewFile.url}
 					fileMimeType={previewFile.type}
+					fileSize={previewFile.size}
 					onClose={() => setPreviewFile(null)}
+					onDelete={
+						previewFile.projectId
+							? () => void handleDeleteFileFromCard(previewFile.projectId!, previewFile)
+							: undefined
+					}
 				/>
 			)}
 		</section>
