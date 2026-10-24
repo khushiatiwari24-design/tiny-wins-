@@ -32,6 +32,7 @@ export default function ProtectedFileViewerModal({
   const [shortcutViolation, setShortcutViolation] = useState<string | null>(null);
   const [textContent, setTextContent] = useState<string | null>(null);
   const [officeEmbedFailed, setOfficeEmbedFailed] = useState(false);
+  const [isCorrupted, setIsCorrupted] = useState(false);
 
   const userEmail = profile?.email || "student@tinywins.app";
 
@@ -39,26 +40,63 @@ export default function ProtectedFileViewerModal({
   const url = fileUrl || "";
   const mime = (fileMimeType || "").toLowerCase();
 
-  // 1. Detect empty or unavailable files
+  // 1. Detect empty, invalid or corrupted URL strings
+  const isUrlCorruptedString =
+    url.includes("NoSuchBucket") ||
+    url.includes("Bucket not found") ||
+    url.includes("statusCode") ||
+    url.startsWith('{"statusCode"');
+
   const isEmptyOrUnavailable =
     fileSize === 0 ||
     !url ||
     url.trim() === "" ||
     url === "null" ||
-    url === "undefined";
+    url === "undefined" ||
+    isUrlCorruptedString ||
+    isCorrupted;
+
+  // Check remote HTTP URLs on mount to catch 404 / NoSuchBucket responses before rendering
+  useEffect(() => {
+    if (!url) return;
+    if (url.startsWith("data:")) {
+      setIsCorrupted(false);
+      return;
+    }
+    if (url.startsWith("http://") || url.startsWith("https://")) {
+      fetch(url)
+        .then(async (res) => {
+          if (!res.ok) {
+            setIsCorrupted(true);
+            return;
+          }
+          const text = await res.text();
+          if (
+            text &&
+            (text.includes("NoSuchBucket") ||
+              text.includes("Bucket not found") ||
+              text.includes('"statusCode":404') ||
+              text.includes('"statusCode":"404"'))
+          ) {
+            setIsCorrupted(true);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [url]);
 
   // 2. Multi-Format Detection
   const isImage =
     mime.includes("image") ||
+    url.startsWith("data:image/") ||
     /\.(jpg|jpeg|png|webp|gif|svg)$/i.test(fileName) ||
-    /\.(jpg|jpeg|png|webp|gif|svg)/i.test(url) ||
-    url.startsWith("data:image");
+    /\.(jpg|jpeg|png|webp|gif|svg)/i.test(url);
 
   const isPdf =
+    url.startsWith("data:application/pdf") ||
+    url.includes(".pdf") ||
     mime.includes("pdf") ||
-    /\.pdf$/i.test(fileName) ||
-    /\.pdf/i.test(url) ||
-    url.startsWith("data:application/pdf");
+    /\.pdf$/i.test(fileName);
 
   const isOfficeDoc =
     /\.(ppt|pptx|doc|docx)$/i.test(fileName) ||
@@ -346,23 +384,16 @@ export default function ProtectedFileViewerModal({
             }
           >
             {isEmptyOrUnavailable ? (
-              /* Empty File (0 Bytes) or Expired Session Warning */
-              <div className="flex flex-col items-center justify-center p-8 text-center max-w-md mx-auto bg-white/[.04] border border-amber-500/30 rounded-2xl shadow-xl">
-                <div className="mb-4 grid h-14 w-14 place-items-center rounded-2xl bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                  <AlertTriangle size={30} />
+              /* Clean Alert Card for Corrupted / NoSuchBucket / 404 / 0 Bytes */
+              <div className="flex flex-col items-center justify-center p-8 text-center max-w-md mx-auto bg-white/[.04] border border-rose-500/30 rounded-2xl shadow-xl">
+                <div className="mb-4 grid h-14 w-14 place-items-center rounded-2xl bg-rose-500/15 text-rose-300 border border-rose-500/30">
+                  <AlertTriangle size={32} />
                 </div>
                 <h4 className="text-lg font-semibold text-white">{fileName}</h4>
-                <p className="mt-2 text-xs sm:text-sm text-amber-200/90 leading-relaxed">
-                  This file appears empty (0 Bytes) or the session expired. Please re-upload a valid PDF or image.
+                <p className="mt-2 text-xs sm:text-sm text-rose-200/90 leading-relaxed">
+                  This file is unavailable or corrupted (storage bucket not found or session expired). Please delete it and upload a fresh copy.
                 </p>
                 <div className="mt-5 flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={onClose}
-                    className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-4 py-2 text-xs font-semibold text-white hover:bg-violet-500 transition cursor-pointer"
-                  >
-                    Close & Re-upload
-                  </button>
                   {onDelete && (
                     <button
                       type="button"
@@ -370,34 +401,41 @@ export default function ProtectedFileViewerModal({
                         onDelete();
                         onClose();
                       }}
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/20 px-3 py-2 text-xs font-semibold text-rose-300 hover:bg-rose-500/30 transition cursor-pointer"
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-600 px-4 py-2 text-xs font-semibold text-white shadow-lg hover:bg-rose-500 transition cursor-pointer"
                     >
-                      <Trash2 size={13} />
+                      <Trash2 size={14} />
                       Delete Corrupted File
                     </button>
                   )}
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="inline-flex items-center gap-2 rounded-xl bg-white/[.08] border border-white/[.12] px-4 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-white/[.12] transition cursor-pointer"
+                  >
+                    Close
+                  </button>
                 </div>
               </div>
+            ) : isPdf ? (
+              /* PDF Viewport via <embed> (Rock-solid for Base64 Data URLs and native PDF engines) */
+              <embed
+                src={url}
+                type="application/pdf"
+                className="w-full h-[75vh] rounded-lg bg-white"
+              />
             ) : isImage ? (
-              /* 1. Real Image Viewport */
+              /* Image Viewport */
               <div className="w-full h-full flex items-center justify-center p-4 overflow-auto">
                 <img
                   src={url}
                   alt={fileName}
-                  className="max-h-[75vh] max-w-full rounded shadow-md pointer-events-none select-none"
+                  className="max-h-[75vh] max-w-full object-contain mx-auto select-none pointer-events-none"
                   draggable={false}
                   onContextMenu={(e) => e.preventDefault()}
                 />
               </div>
-            ) : isPdf ? (
-              /* 2. Real PDF Viewport */
-              <iframe
-                src={`${url}#toolbar=0&navpanes=0&scrollbar=1`}
-                className="w-full h-[75vh] border-0 rounded-lg bg-white pointer-events-auto"
-                title={fileName}
-              />
             ) : isOfficeDoc ? (
-              /* 3. Real Office Viewport (Word / PowerPoint) */
+              /* Office Viewport */
               isRemoteHttp && !officeEmbedFailed ? (
                 <iframe
                   src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(url)}`}
@@ -415,12 +453,12 @@ export default function ProtectedFileViewerModal({
                     {isPowerPoint ? "Protected Slide Presentation" : "Protected Document"}
                   </span>
                   <p className="mt-4 text-xs sm:text-sm text-zinc-300 leading-relaxed">
-                    Local preview mode active. Slide deck and document outline are secured within your classroom workspace.
+                    Presentation outline active. Slide deck and document outline are secured within your classroom workspace.
                   </p>
                 </div>
               )
             ) : isText ? (
-              /* 4. Formatted, Scrollable Markdown / Notes Reader */
+              /* Formatted Markdown / Notes Reader */
               <div className="max-w-3xl mx-auto w-full rounded-2xl bg-white/[.02] border border-white/[.06] p-6 sm:p-8 shadow-xl max-h-[75vh] overflow-auto">
                 <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-cyan-300 mb-4">
                   <FileText size={15} />
@@ -438,11 +476,10 @@ export default function ProtectedFileViewerModal({
                 </div>
               </div>
             ) : (
-              /* 5. Direct Active Iframe Viewport (Replaces Static Card) */
-              <iframe
+              /* Fallback Viewer */
+              <embed
                 src={url}
-                className="w-full h-[75vh] border-0 rounded-lg bg-white pointer-events-auto"
-                title={fileName}
+                className="w-full h-[75vh] rounded-lg bg-white"
               />
             )}
           </div>

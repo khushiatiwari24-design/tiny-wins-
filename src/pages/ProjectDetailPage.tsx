@@ -368,7 +368,7 @@ export default function ProjectDetailPage() {
   const openFile = async (file: StoredFile) => {
     if (!projectId) return;
 
-    let targetUrl = file.url || file.metadata?.url;
+    let targetUrl = (file as any).data_url || file.metadata?.data_url || file.url || file.metadata?.url;
     if (!targetUrl && file.path) {
       try {
         const { data: pubData } = requireSupabase().storage.from("project-files").getPublicUrl(file.path);
