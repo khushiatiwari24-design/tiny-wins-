@@ -6,11 +6,16 @@ import { useTasks } from "../hooks/useTasks";
 import { requireSupabase } from "../lib/supabase";
 import type { Priority, TaskInput } from "../types/task";
 import ProtectedContentViewer from "../components/projects/ProtectedContentViewer";
+import {
+  uploadProjectFile,
+  fetchProjectFiles,
+  removeLocalProjectFile,
+  type StoredProjectFile as StoredFile,
+} from "../lib/projectFiles";
 
 type Project = { id: string; title: string; description: string; type: string; join_code: string; owner_id: string; created_at: string; materials?: Note[] };
 type Member = { user_id: string; role: string; joined_at: string; profile: { full_name: string; email: string } | null };
 type Note = { id: string; title: string; content: string; author_id: string; created_at: string; author: { full_name: string } | null };
-type StoredFile = { name: string; path: string; id: string | null; metadata?: { mimetype?: string; size?: number }; created_at?: string };
 type Tab = "Overview" | "Tasks" | "Files" | "Notes" | "Members" | "Activity";
 
 const formatDate = (value: string) => new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
@@ -98,34 +103,18 @@ export default function ProjectDetailPage() {
     }
 
     if (!projectData) {
-      const cleanId = projectId || "classroom";
-      projectData = {
-        id: cleanId,
-        title: cleanId.startsWith("joined-")
-          ? `Classroom (${cleanId.replace("joined-", "").toUpperCase()})`
-          : `Classroom (${cleanId.toUpperCase()})`,
-        description: `Shared Classroom linked to ${cleanId}`,
-        type: "class",
-        join_code: cleanId.toUpperCase(),
-        owner_id: session?.user?.id || "teacher-shared",
-        created_at: new Date().toISOString(),
-        materials: [],
-      };
-      try {
-        const localJoined = JSON.parse(localStorage.getItem("tiny_wins_joined_projects") || "[]");
-        if (!localJoined.some((p: any) => p.id === cleanId)) {
-          localStorage.setItem("tiny_wins_joined_projects", JSON.stringify([...localJoined, projectData]));
-        }
-      } catch {}
+      setError("This project could not be found or you do not have permission to view it.");
+      setLoading(false);
+      return;
     }
 
-    setProject(projectData as Project);
+    setProject(projectData);
 
-    // Load local notes for this project
+    // Fallback notes from local storage
     let localNotes: Note[] = [];
     try {
-      const stored = localStorage.getItem(`tiny_wins_notes_${projectId}`);
-      if (stored) localNotes = JSON.parse(stored);
+      const raw = localStorage.getItem(`tiny_wins_notes_${projectId}`);
+      if (raw) localNotes = JSON.parse(raw);
     } catch (err) {
       console.error("Local notes read error:", err);
     }
@@ -271,14 +260,12 @@ export default function ProjectDetailPage() {
 
   const loadFiles = async (id: string, memberIds: string[]) => {
     if (!session) return;
-    const results = await Promise.all([...new Set(memberIds)].map(async memberId => {
-      const folder = `${id}/${memberId}`;
-      const result = await requireSupabase().storage.from("project-files").list(folder, { sortBy: { column: "created_at", order: "desc" } });
-      return { folder, ...result };
-    }));
-    const failed = results.find(result => result.error);
-    if (failed?.error) { setError(`Unable to load project files: ${failed.error.message}`); return; }
-    setFiles(results.flatMap(result => (result.data ?? []).filter(file => file.name !== ".emptyFolderPlaceholder").map(file => ({ ...file, path: `${result.folder}/${file.name}` })) as StoredFile[]));
+    try {
+      const loaded = await fetchProjectFiles(id, memberIds);
+      setFiles(loaded);
+    } catch (err: any) {
+      console.warn("Could not load project files:", err);
+    }
   };
 
   useEffect(() => { void loadProjectData(); }, [projectId, session?.user.id]);
@@ -301,24 +288,23 @@ export default function ProjectDetailPage() {
   const uploadFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file || !projectId || !session || uploading) return;
-    setUploading(true); setError("");
-    const path = `${projectId}/${session.user.id}/${Date.now()}-${file.name}`;
+    setUploading(true);
+    setError("");
+
     try {
-      const uploadRequest = requireSupabase().storage.from("project-files").upload(path, file, { contentType: file.type || "application/octet-stream", upsert: false });
-      const timeout = new Promise<{ error: { message: string } }>((resolve) => window.setTimeout(() => resolve({ error: { message: "The upload timed out. Check your connection and confirm the project-files bucket exists in Supabase." } }), 30000));
-      const { error: uploadError } = await Promise.race([uploadRequest, timeout]);
-      if (uploadError) {
-        const storageMessage = uploadError.message === "Bucket not found"
-          ? "The project-files bucket is missing. Run supabase/project-files-storage.sql in the Supabase SQL Editor, then try again."
-          : uploadError.message;
-        setError(`Unable to upload file: ${storageMessage}`);
-        return;
-      }
-      setNotice("File uploaded.");
-      await loadProjectData();
+      const { file: storedFile, message } = await uploadProjectFile(
+        projectId,
+        session.user.id,
+        file
+      );
+
+      setFiles((prev) => [storedFile, ...prev.filter((f) => f.name !== storedFile.name)]);
+      setNotice(message);
+      window.setTimeout(() => setNotice(""), 4000);
+      void loadFiles(projectId, members.map((m) => m.user_id));
     } catch (err: any) {
       console.error("File upload failed:", err);
-      setError(`Unable to upload file: ${err?.message || err?.error_description || "Supabase Storage is unavailable."}`);
+      setError(`Unable to upload file: ${err?.message || err?.error_description || "Storage error"}`);
     } finally {
       setUploading(false);
       event.target.value = "";
@@ -327,9 +313,43 @@ export default function ProjectDetailPage() {
 
   const openFile = async (file: StoredFile) => {
     if (!projectId || !session) return;
-    const { data, error: downloadError } = await requireSupabase().storage.from("project-files").createSignedUrl(file.path, 3600);
-    if (downloadError) setError(`Unable to preview file: ${downloadError.message}`);
-    else if (data?.signedUrl) setPreview({ file, url: data.signedUrl });
+    if (file.url) {
+      setPreview({ file, url: file.url });
+      return;
+    }
+    try {
+      const { data, error: downloadError } = await requireSupabase()
+        .storage.from("project-files")
+        .createSignedUrl(file.path, 3600);
+
+      if (downloadError) {
+        if (file.url) setPreview({ file, url: file.url });
+        else setError(`Unable to preview file: ${downloadError.message}`);
+      } else if (data?.signedUrl) {
+        setPreview({ file, url: data.signedUrl });
+      }
+    } catch (err: any) {
+      if (file.url) setPreview({ file, url: file.url });
+      else setError(`Unable to preview file: ${err?.message || "Storage error"}`);
+    }
+  };
+
+  const deleteFile = async (file: StoredFile) => {
+    const confirmed = window.confirm(`Are you sure you want to delete "${file.name}"?`);
+    if (!confirmed) return;
+
+    setFiles((prev) => prev.filter((f) => f.name !== file.name && f.path !== file.path));
+    if (projectId) {
+      removeLocalProjectFile(projectId, file.name);
+    }
+
+    try {
+      await requireSupabase().storage.from("project-files").remove([file.path]);
+    } catch (err) {
+      console.warn("Could not remove file from Supabase storage:", err);
+    }
+    setNotice("File deleted.");
+    window.setTimeout(() => setNotice(""), 3000);
   };
 
   const submitNote = async (event: React.FormEvent) => {
@@ -527,7 +547,7 @@ export default function ProjectDetailPage() {
     <div className="mt-6 max-w-6xl">
       {activeTab === "Overview" && <Overview project={project} tasks={projectTasks} members={members} activity={activity} progress={progress} />}
       {activeTab === "Tasks" && <TaskSection tasks={projectTasks} categories={categories} currentUserId={session?.user.id} showForm={showTaskForm} setShowForm={setShowTaskForm} onSubmit={submitTask} saving={taskSaving} title={taskTitle} setTitle={setTaskTitle} description={taskDescription} setDescription={setTaskDescription} category={taskCategory} setCategory={setTaskCategory} priority={taskPriority} setPriority={setTaskPriority} dueDate={taskDueDate} setDueDate={setTaskDueDate} dueTime={taskDueTime} setDueTime={setTaskDueTime} onToggle={task => void toggle(task)} onDelete={task => void remove(task.id)} />}
-      {activeTab === "Files" && <FilesSection files={files} uploading={uploading} onUpload={uploadFile} onOpen={file => void openFile(file)} />}
+      {activeTab === "Files" && <FilesSection files={files} uploading={uploading} onUpload={uploadFile} onOpen={file => void openFile(file)} onDelete={file => void deleteFile(file)} />}
       {activeTab === "Notes" && (
         <NotesSection
           notes={notes}
@@ -580,14 +600,93 @@ function ActivitySection({ activity }: { activity: { date: string; text: string 
 
 function TaskSection({ tasks, categories, currentUserId, showForm, setShowForm, onSubmit, saving, title, setTitle, description, setDescription, category, setCategory, priority, setPriority, dueDate, setDueDate, dueTime, setDueTime, onToggle, onDelete }: { tasks: ReturnType<typeof useTasks>["tasks"]; categories: { id: string; name: string }[]; currentUserId?: string; showForm: boolean; setShowForm: (value: boolean) => void; onSubmit: (event: React.FormEvent) => void; saving: boolean; title: string; setTitle: (value: string) => void; description: string; setDescription: (value: string) => void; category: string; setCategory: (value: string) => void; priority: Priority; setPriority: (value: Priority) => void; dueDate: string; setDueDate: (value: string) => void; dueTime: string; setDueTime: (value: string) => void; onToggle: (task: ReturnType<typeof useTasks>["tasks"][number]) => void; onDelete: (task: ReturnType<typeof useTasks>["tasks"][number]) => void }) { return <div><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs uppercase tracking-[.16em] text-zinc-600">Project tasks</p><h2 className="mt-2 text-2xl font-medium text-white">Move the work forward</h2></div><button onClick={() => setShowForm(!showForm)} className="button inline-flex items-center gap-2 bg-violet-400 text-zinc-950"><Plus size={16} /> Add task</button></div>{showForm && <form onSubmit={onSubmit} className="mt-5 rounded-2xl border border-violet-300/20 bg-violet-300/[.06] p-5"><div className="grid gap-3 md:grid-cols-2"><input className="field md:col-span-2" required placeholder="Task title" value={title} onChange={event => setTitle(event.target.value)} /><textarea className="field min-h-20 md:col-span-2" placeholder="Description" value={description} onChange={event => setDescription(event.target.value)} /><select className="field" value={category} onChange={event => setCategory(event.target.value)}>{categories.map(option => <option key={option.id} value={option.name}>{option.name}</option>)}</select><select className="field" value={priority} onChange={event => setPriority(event.target.value as Priority)}><option>High</option><option>Medium</option><option>Low</option></select><input className="field" type="date" value={dueDate} onChange={event => setDueDate(event.target.value)} /><input className="field" type="time" value={dueTime} onChange={event => setDueTime(event.target.value)} /></div><div className="mt-4 flex gap-2"><button disabled={saving} className="button bg-white text-zinc-950 disabled:opacity-50">{saving ? "Adding..." : "Add task"}</button><button type="button" onClick={() => setShowForm(false)} className="button">Cancel</button></div></form>}<div className="mt-5 space-y-2">{tasks.length ? tasks.map(task => <div key={task.id} className={`flex items-center gap-3 rounded-xl border border-white/[.07] bg-white/[.035] p-4 ${task.completed ? "opacity-60" : ""}`}><button onClick={() => onToggle(task)} className={`grid h-6 w-6 shrink-0 place-items-center rounded-full border ${task.completed ? "border-white bg-white text-black" : "border-zinc-700 text-transparent hover:border-zinc-300"}`} aria-label={`Mark ${task.title} ${task.completed ? "incomplete" : "complete"}`}><Check size={13} /></button><div className="min-w-0 flex-1"><p className={`text-sm font-medium ${task.completed ? "text-zinc-500 line-through" : "text-zinc-200"}`}>{task.title}</p><p className="mt-1 text-xs text-zinc-600">{task.category}{task.dueDate ? ` · Due ${task.dueDate}` : ""}</p></div><span className="hidden text-xs text-zinc-500 sm:block">{task.priority}</span>{task.ownerId === currentUserId && <button onClick={() => onDelete(task)} className="text-xs text-zinc-600 hover:text-red-300">Delete</button>}</div>) : <div className="rounded-2xl border border-dashed border-white/[.1] px-6 py-12 text-center"><Check className="mx-auto text-zinc-700" size={24} /><p className="mt-3 text-sm text-zinc-500">No tasks in this project yet.</p></div>}</div></div>; }
 
-const fileMimeType = (file: StoredFile) => file.metadata?.mimetype || ({ pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", txt: "text/plain", csv: "text/csv", json: "application/json", mp3: "audio/mpeg", mp4: "video/mp4" }[file.name.split(".").pop()?.toLowerCase() || ""] || "application/octet-stream");
+const fileMimeType = (file: StoredFile) => file.metadata?.mimetype || file.mimetype || ({ pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", txt: "text/plain", csv: "text/csv", json: "application/json", mp3: "audio/mpeg", mp4: "video/mp4" }[file.name.split(".").pop()?.toLowerCase() || ""] || "application/octet-stream");
 const isImageFile = (file: StoredFile) => fileMimeType(file).startsWith("image/");
 const isPdfFile = (file: StoredFile) => fileMimeType(file) === "application/pdf";
 const isBrowserPreviewable = (file: StoredFile) => isImageFile(file) || isPdfFile(file) || fileMimeType(file).startsWith("text/") || fileMimeType(file) === "application/json" || fileMimeType(file).startsWith("audio/") || fileMimeType(file).startsWith("video/");
 
-function FilesSection({ files, uploading, onUpload, onOpen }: { files: StoredFile[]; uploading: boolean; onUpload: (event: React.ChangeEvent<HTMLInputElement>) => void; onOpen: (file: StoredFile) => void }) { return <div><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs uppercase tracking-[.16em] text-zinc-600">Project files</p><h2 className="mt-2 text-2xl font-medium text-white">A shared shelf for the useful things</h2></div><label className="button inline-flex cursor-pointer items-center gap-2 bg-violet-400 text-zinc-950"><Upload size={16} /> {uploading ? "Uploading..." : "Upload file"}<input type="file" className="hidden" onChange={onUpload} disabled={uploading} /></label></div><div className="mt-5 space-y-2">{files.length ? files.map(file => <div key={file.id ?? file.path} className="flex items-center gap-3 rounded-xl border border-white/[.07] bg-white/[.035] p-4"><FileText size={20} className="text-cyan-300" /><div className="min-w-0 flex-1"><p className="truncate text-sm text-zinc-200">{file.name}</p><p className="mt-1 text-xs text-zinc-600">{fileMimeType(file)} · {formatBytes(file.metadata?.size)} · {file.created_at ? formatDate(file.created_at) : "Uploaded"}</p></div>{isBrowserPreviewable(file) && <button onClick={() => onOpen(file)} className="button px-3 py-2 text-xs">{isImageFile(file) || isPdfFile(file) ? "Preview" : "Open"}</button>}</div>) : <div className="rounded-2xl border border-dashed border-white/[.1] px-6 py-12 text-center"><FolderOpen className="mx-auto text-zinc-700" size={26} /><p className="mt-3 text-sm text-zinc-500">No files uploaded to this project.</p></div>}</div></div>; }
+function FilesSection({
+  files,
+  uploading,
+  onUpload,
+  onOpen,
+  onDelete,
+}: {
+  files: StoredFile[];
+  uploading: boolean;
+  onUpload: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  onOpen: (file: StoredFile) => void;
+  onDelete: (file: StoredFile) => void;
+}) {
+  return (
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[.16em] text-zinc-600">Project files</p>
+          <h2 className="mt-2 text-2xl font-medium text-white">A shared shelf for the useful things</h2>
+        </div>
+        <label className="button inline-flex cursor-pointer items-center gap-2 bg-violet-400 text-zinc-950 font-medium hover:bg-violet-300 transition shadow-md">
+          <Upload size={16} />
+          {uploading ? "Uploading (5s fast)..." : "Upload file"}
+          <input type="file" className="hidden" onChange={onUpload} disabled={uploading} />
+        </label>
+      </div>
 
-function FilePreview({ file, url, onClose }: { file: StoredFile; url: string; onClose: () => void }) { const mimeType = fileMimeType(file); return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={`Preview ${file.name}`} onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><div className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-white/[.1] bg-[#111114] shadow-2xl"><div className="flex items-center gap-4 border-b border-white/[.08] px-5 py-4"><FileText size={18} className="text-cyan-300" /><p className="min-w-0 flex-1 truncate text-sm text-white">{file.name}</p><button onClick={onClose} className="button p-2" aria-label="Close preview"><X size={16} /></button></div><div className="min-h-0 overflow-auto bg-black/30 p-4">{isImageFile(file) ? <img src={url} alt={file.name} className="mx-auto max-h-[72vh] max-w-full object-contain" /> : isPdfFile(file) ? <iframe src={url} title={file.name} className="h-[72vh] w-full rounded-lg bg-white" /> : mimeType.startsWith("audio/") ? <audio src={url} controls className="mx-auto mt-16 w-full max-w-xl" /> : mimeType.startsWith("video/") ? <video src={url} controls className="mx-auto max-h-[72vh] max-w-full" /> : <iframe src={url} title={file.name} className="h-[72vh] w-full rounded-lg bg-white" />}</div></div></div>; }
+      <div className="mt-5 space-y-2">
+        {files.length ? (
+          files.map((file) => (
+            <div
+              key={file.id ?? file.path}
+              className="flex items-center gap-3 rounded-xl border border-white/[.07] bg-white/[.035] p-4 hover:border-white/15 transition"
+            >
+              <FileText size={20} className="text-cyan-300 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm text-zinc-200 font-medium">{file.name}</p>
+                <p className="mt-1 text-xs text-zinc-500 flex flex-wrap items-center gap-1.5">
+                  <span>{fileMimeType(file)}</span>
+                  <span>·</span>
+                  <span>{formatBytes(file.metadata?.size || file.size)}</span>
+                  <span>·</span>
+                  <span>{file.created_at ? formatDate(file.created_at) : "Uploaded"}</span>
+                  {file.isLocalFallback && (
+                    <span className="px-1.5 py-0.2 rounded bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[10px] font-medium">
+                      Fast Fallback
+                    </span>
+                  )}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {isBrowserPreviewable(file) && (
+                  <button
+                    type="button"
+                    onClick={() => onOpen(file)}
+                    className="button px-3 py-1.5 text-xs font-medium cursor-pointer"
+                  >
+                    {isImageFile(file) || isPdfFile(file) ? "Preview" : "Open"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => onDelete(file)}
+                  className="p-1.5 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition cursor-pointer"
+                  title="Remove file"
+                  aria-label="Remove file"
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
+            </div>
+          ))
+        ) : (
+          <div className="rounded-2xl border border-dashed border-white/[.1] px-6 py-12 text-center">
+            <FolderOpen className="mx-auto text-zinc-700" size={26} />
+            <p className="mt-3 text-sm text-zinc-500">No files uploaded to this project.</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function NotesSection({
   notes,
