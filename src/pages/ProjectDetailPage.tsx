@@ -671,6 +671,14 @@ export default function ProjectDetailPage() {
     </div>
     {preview && (
       <ProtectedContentViewer
+        file={{
+          ...preview.file,
+          url: preview.url,
+          name: preview.file.name,
+          type: fileMimeType(preview.file),
+          size: preview.file.metadata?.size || preview.file.size,
+          uploader_name: preview.file.uploader_name || ownerProfile?.full_name || "Teacher",
+        }}
         title={preview.file.name}
         type="file"
         fileUrl={preview.url}

@@ -2,8 +2,19 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, FileText, Lock, ShieldAlert, Trash2, X } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 
+export interface FileData {
+  id?: string | null;
+  name?: string;
+  url?: string;
+  type?: string;
+  size?: number;
+  uploader_name?: string;
+  created_at?: string;
+}
+
 export interface ProtectedFileViewerModalProps {
-  title: string;
+  file?: FileData;
+  title?: string;
   type?: "file" | "note";
   content?: string; // For notes or inline text
   fileUrl?: string; // For files
@@ -15,59 +26,106 @@ export interface ProtectedFileViewerModalProps {
   onDelete?: () => void;
 }
 
-export default function ProtectedFileViewerModal({
-  title,
-  type = "file",
-  content,
-  fileUrl,
-  fileMimeType = "application/pdf",
-  fileSize,
-  authorName,
-  createdAt,
-  onClose,
-  onDelete,
-}: ProtectedFileViewerModalProps) {
+/**
+ * High-performance Base64 to Binary Blob conversion utility.
+ * Prevents Chromium/Opera from blacking/whiting out on giant data URLs.
+ */
+function dataURLtoBlob(dataurl: string): Blob | null {
+  try {
+    const parts = dataurl.split(",");
+    if (parts.length < 2) return null;
+    const mimeMatch = parts[0].match(/:(.*?);/);
+    const mime = mimeMatch ? mimeMatch[1] : "application/pdf";
+    const binaryString = atob(parts[1]);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    return new Blob([bytes], { type: mime });
+  } catch (err) {
+    console.error("Failed to convert base64 to blob:", err);
+    return null;
+  }
+}
+
+export default function ProtectedFileViewerModal(props: ProtectedFileViewerModalProps) {
+  const {
+    file: propFile,
+    title,
+    type = "file",
+    content,
+    fileUrl,
+    fileMimeType = "application/pdf",
+    fileSize,
+    authorName,
+    createdAt,
+    onClose,
+    onDelete,
+  } = props;
+
   const { profile } = useAuth();
   const [isBlurred, setIsBlurred] = useState(false);
   const [shortcutViolation, setShortcutViolation] = useState<string | null>(null);
-  const [textContent, setTextContent] = useState<string | null>(null);
-  const [officeEmbedFailed, setOfficeEmbedFailed] = useState(false);
-  const [isCorrupted, setIsCorrupted] = useState(false);
+  const [renderUrl, setRenderUrl] = useState<string>("");
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isCorrupted, setIsCorrupted] = useState<boolean>(false);
 
   const userEmail = profile?.email || "student@tinywins.app";
 
-  const fileName = title || "Document";
-  const url = fileUrl || "";
-  const mime = (fileMimeType || "").toLowerCase();
+  // Normalize file data across individual props or file object
+  const file: FileData = propFile || {
+    name: title || "Document",
+    url: fileUrl,
+    type: fileMimeType,
+    size: fileSize,
+    uploader_name: authorName,
+    created_at: createdAt,
+  };
 
-  // 1. Detect empty, invalid or corrupted URL strings
+  const fileName = file.name || "Document";
+  const rawUrl = file.url || "";
+  const mime = (file.type || "").toLowerCase();
+
+  // Detect corrupted strings or 404 NoSuchBucket payloads
   const isUrlCorruptedString =
-    url.includes("NoSuchBucket") ||
-    url.includes("Bucket not found") ||
-    url.includes("statusCode") ||
-    url.startsWith('{"statusCode"');
+    rawUrl.includes("NoSuchBucket") ||
+    rawUrl.includes("Bucket not found") ||
+    rawUrl.includes("statusCode") ||
+    rawUrl.startsWith('{"statusCode"');
 
-  const isEmptyOrUnavailable =
-    fileSize === 0 ||
-    !url ||
-    url.trim() === "" ||
-    url === "null" ||
-    url === "undefined" ||
-    isUrlCorruptedString ||
-    isCorrupted;
-
-  // Check remote HTTP URLs on mount to catch 404 / NoSuchBucket responses before rendering
+  // Convert Base64 data URLs to Native Blob Object URLs on mount
   useEffect(() => {
-    if (!url) return;
-    if (url.startsWith("data:")) {
-      setIsCorrupted(false);
+    if (!rawUrl || isUrlCorruptedString) {
+      setRenderUrl("");
+      setIsLoading(false);
+      setIsCorrupted(Boolean(isUrlCorruptedString));
       return;
     }
-    if (url.startsWith("http://") || url.startsWith("https://")) {
-      fetch(url)
+
+    setIsLoading(true);
+    setIsCorrupted(false);
+
+    // If Base64 data URL, convert to native Blob URL to avoid browser string limits
+    if (rawUrl.startsWith("data:")) {
+      const blob = dataURLtoBlob(rawUrl);
+      if (blob) {
+        const objUrl = URL.createObjectURL(blob);
+        setRenderUrl(objUrl);
+        setIsLoading(false);
+        return () => {
+          URL.revokeObjectURL(objUrl);
+        };
+      }
+    }
+
+    // Check remote HTTP URLs for 404 / NoSuchBucket error responses
+    if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
+      fetch(rawUrl)
         .then(async (res) => {
           if (!res.ok) {
             setIsCorrupted(true);
+            setIsLoading(false);
             return;
           }
           const text = await res.text();
@@ -79,56 +137,22 @@ export default function ProtectedFileViewerModal({
               text.includes('"statusCode":"404"'))
           ) {
             setIsCorrupted(true);
+            setIsLoading(false);
+            return;
           }
+          setRenderUrl(rawUrl);
+          setIsLoading(false);
         })
-        .catch(() => {});
+        .catch(() => {
+          setRenderUrl(rawUrl);
+          setIsLoading(false);
+        });
+      return;
     }
-  }, [url]);
 
-  // 2. Multi-Format Detection
-  const isImage =
-    mime.includes("image") ||
-    url.startsWith("data:image/") ||
-    /\.(jpg|jpeg|png|webp|gif|svg)$/i.test(fileName) ||
-    /\.(jpg|jpeg|png|webp|gif|svg)/i.test(url);
-
-  const isPdf =
-    url.startsWith("data:application/pdf") ||
-    url.includes(".pdf") ||
-    mime.includes("pdf") ||
-    /\.pdf$/i.test(fileName);
-
-  const isOfficeDoc =
-    /\.(ppt|pptx|doc|docx)$/i.test(fileName) ||
-    /\.(ppt|pptx|doc|docx)/i.test(url) ||
-    mime.includes("powerpoint") ||
-    mime.includes("presentation") ||
-    mime.includes("wordprocessingml") ||
-    mime.includes("msword");
-
-  const isPowerPoint =
-    /\.(ppt|pptx)$/i.test(fileName) ||
-    /\.(ppt|pptx)/i.test(url) ||
-    mime.includes("powerpoint") ||
-    mime.includes("presentation");
-
-  const isText =
-    type === "note" ||
-    mime.includes("text") ||
-    /\.(txt|md|markdown|json|csv|log)$/i.test(fileName);
-
-  // Fetch text content if text file and content not pre-supplied
-  useEffect(() => {
-    if (isText && url && !content && !url.startsWith("data:")) {
-      fetch(url)
-        .then((res) => {
-          if (res.ok) return res.text();
-          throw new Error("Unable to fetch text file");
-        })
-        .then((text) => setTextContent(text))
-        .catch(() => {});
-    }
-  }, [isText, url, content]);
+    setRenderUrl(rawUrl);
+    setIsLoading(false);
+  }, [rawUrl, isUrlCorruptedString]);
 
   // Anti-Screenshot & Shortcut interception
   useEffect(() => {
@@ -197,7 +221,7 @@ export default function ProtectedFileViewerModal({
       }, 4000);
     };
 
-    // Only blur on tab switch / visibilityState hidden
+    // Auto blur when tab is hidden or window loses focus
     const handleVisibilityChange = () => {
       if (document.visibilityState === "hidden") {
         setIsBlurred(true);
@@ -207,6 +231,11 @@ export default function ProtectedFileViewerModal({
       }
     };
 
+    const handleWindowBlur = () => {
+      setIsBlurred(true);
+    };
+
+    // Auto unblur as soon as user returns or window regains focus
     const handleWindowFocus = () => {
       setIsBlurred(false);
       setShortcutViolation(null);
@@ -214,15 +243,18 @@ export default function ProtectedFileViewerModal({
 
     window.addEventListener("keydown", handleKeyIntercept, true);
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("blur", handleWindowBlur);
     window.addEventListener("focus", handleWindowFocus);
 
     return () => {
       window.removeEventListener("keydown", handleKeyIntercept, true);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("blur", handleWindowBlur);
       window.removeEventListener("focus", handleWindowFocus);
     };
   }, [onClose]);
 
+  // Click anywhere inside modal immediately unblurs so it never stays stuck
   const handleModalClick = () => {
     if (isBlurred) {
       setIsBlurred(false);
@@ -230,9 +262,17 @@ export default function ProtectedFileViewerModal({
     }
   };
 
-  const isRemoteHttp = Boolean(
-    url && (url.startsWith("http://") || url.startsWith("https://"))
-  );
+  const isImageFile =
+    mime.includes("image") ||
+    rawUrl.startsWith("data:image/") ||
+    /\.(jpg|jpeg|png|webp|gif|svg)$/i.test(fileName) ||
+    /\.(jpg|jpeg|png|webp|gif|svg)/i.test(rawUrl);
+
+  const isCorruptedOrEmpty =
+    isCorrupted ||
+    isUrlCorruptedString ||
+    (!isLoading && !renderUrl && !content) ||
+    file.size === 0;
 
   return (
     <div
@@ -285,9 +325,11 @@ export default function ProtectedFileViewerModal({
               </div>
               <p className="text-[11px] text-slate-400 truncate">
                 {type === "note" ? "Secure Study Material" : "Protected Document"}
-                {authorName ? ` • By ${authorName}` : ""}
-                {createdAt ? ` • ${createdAt}` : ""}
-                {fileSize !== undefined && fileSize > 0 ? ` • ${(fileSize / 1024).toFixed(1)} KB` : ""}
+                {file.uploader_name ? ` • By ${file.uploader_name}` : ""}
+                {file.created_at ? ` • ${new Date(file.created_at).toLocaleDateString()}` : ""}
+                {file.size !== undefined && file.size > 0
+                  ? ` • ${(file.size / 1024).toFixed(1)} KB`
+                  : ""}
               </p>
             </div>
           </div>
@@ -304,7 +346,7 @@ export default function ProtectedFileViewerModal({
                 title="Delete this file"
               >
                 <Trash2 size={14} />
-                <span className="hidden sm:inline">Delete</span>
+                <span className="hidden sm:inline">Delete File</span>
               </button>
             )}
 
@@ -329,19 +371,19 @@ export default function ProtectedFileViewerModal({
 
         {/* Main Protected Content Area */}
         <div className="relative flex-1 overflow-auto bg-[#060814] p-3 sm:p-6 flex flex-col justify-center">
-          {/* Visible Diagonal Watermark Overlay */}
+          {/* Subtle Diagonal Watermark Overlay */}
           <div className="pointer-events-none absolute inset-0 z-20 flex flex-wrap items-center justify-around gap-16 overflow-hidden opacity-10 select-none">
             {Array.from({ length: 32 }).map((_, i) => (
               <div
                 key={i}
                 className="-rotate-25 whitespace-nowrap text-lg font-mono font-bold uppercase tracking-widest text-white select-none pointer-events-none"
               >
-                {userEmail} • Tiny Wins Protected
+                Logged as: {userEmail} • TINY WINS PROTECTED
               </div>
             ))}
           </div>
 
-          {/* Window Blur / Screenshot Shield Overlay */}
+          {/* Window Blur / Screenshot Shield Overlay (Clicking anywhere immediately unblurs) */}
           {isBlurred && (
             <div
               onClick={() => {
@@ -383,15 +425,33 @@ export default function ProtectedFileViewerModal({
                 : undefined
             }
           >
-            {isEmptyOrUnavailable ? (
-              /* Clean Alert Card for Corrupted / NoSuchBucket / 404 / 0 Bytes */
+            {type === "note" || content ? (
+              /* Protected Note / Inline Text Viewer */
+              <div className="max-w-3xl mx-auto w-full rounded-2xl bg-white/[.02] border border-white/[.06] p-6 sm:p-8 shadow-xl max-h-[75vh] overflow-auto">
+                <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-cyan-300 mb-4">
+                  <FileText size={15} />
+                  <span>Confidential Course Study Material</span>
+                </div>
+                <h1 className="text-xl sm:text-2xl font-bold text-white mb-6">
+                  {fileName}
+                </h1>
+                <div
+                  className="whitespace-pre-wrap font-sans text-sm sm:text-base leading-relaxed text-slate-200 select-none"
+                  style={{ userSelect: "none", WebkitUserSelect: "none" }}
+                  onContextMenu={(e) => e.preventDefault()}
+                >
+                  {content}
+                </div>
+              </div>
+            ) : isCorruptedOrEmpty ? (
+              /* Clean Alert Card for Corrupted / Empty / NoSuchBucket files */
               <div className="flex flex-col items-center justify-center p-8 text-center max-w-md mx-auto bg-white/[.04] border border-rose-500/30 rounded-2xl shadow-xl">
                 <div className="mb-4 grid h-14 w-14 place-items-center rounded-2xl bg-rose-500/15 text-rose-300 border border-rose-500/30">
                   <AlertTriangle size={32} />
                 </div>
                 <h4 className="text-lg font-semibold text-white">{fileName}</h4>
                 <p className="mt-2 text-xs sm:text-sm text-rose-200/90 leading-relaxed">
-                  This file is unavailable or corrupted (storage bucket not found or session expired). Please delete it and upload a fresh copy.
+                  This file is unavailable or corrupted (storage session expired or bucket not found). Please delete it and upload a fresh copy.
                 </p>
                 <div className="mt-5 flex items-center gap-3">
                   {onDelete && (
@@ -416,71 +476,40 @@ export default function ProtectedFileViewerModal({
                   </button>
                 </div>
               </div>
-            ) : isPdf ? (
-              /* PDF Viewport via <embed> (Rock-solid for Base64 Data URLs and native PDF engines) */
-              <embed
-                src={url}
-                type="application/pdf"
-                className="w-full h-[75vh] rounded-lg bg-white"
-              />
-            ) : isImage ? (
-              /* Image Viewport */
-              <div className="w-full h-full flex items-center justify-center p-4 overflow-auto">
-                <img
-                  src={url}
-                  alt={fileName}
-                  className="max-h-[75vh] max-w-full object-contain mx-auto select-none pointer-events-none"
-                  draggable={false}
-                  onContextMenu={(e) => e.preventDefault()}
-                />
-              </div>
-            ) : isOfficeDoc ? (
-              /* Office Viewport */
-              isRemoteHttp && !officeEmbedFailed ? (
-                <iframe
-                  src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(url)}`}
-                  className="w-full h-[75vh] border-0 rounded-lg bg-white pointer-events-auto"
-                  title={fileName}
-                  onError={() => setOfficeEmbedFailed(true)}
-                />
-              ) : (
-                <div className="flex flex-col items-center justify-center p-8 text-center max-w-lg mx-auto bg-white/[.04] border border-white/[.08] rounded-2xl shadow-xl">
-                  <div className="h-14 w-14 rounded-2xl bg-violet-500/20 text-violet-300 flex items-center justify-center mb-4 border border-violet-500/30">
-                    <FileText size={30} />
-                  </div>
-                  <h4 className="text-lg font-semibold text-white">{fileName}</h4>
-                  <span className="mt-2 px-3 py-1 rounded-full text-xs bg-violet-500/20 text-violet-300 border border-violet-500/30 font-medium">
-                    {isPowerPoint ? "Protected Slide Presentation" : "Protected Document"}
-                  </span>
-                  <p className="mt-4 text-xs sm:text-sm text-zinc-300 leading-relaxed">
-                    Presentation outline active. Slide deck and document outline are secured within your classroom workspace.
-                  </p>
-                </div>
-              )
-            ) : isText ? (
-              /* Formatted Markdown / Notes Reader */
-              <div className="max-w-3xl mx-auto w-full rounded-2xl bg-white/[.02] border border-white/[.06] p-6 sm:p-8 shadow-xl max-h-[75vh] overflow-auto">
-                <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-cyan-300 mb-4">
-                  <FileText size={15} />
-                  <span>Confidential Course Study Material</span>
-                </div>
-                <h1 className="text-xl sm:text-2xl font-bold text-white mb-6">
-                  {fileName}
-                </h1>
-                <div
-                  className="whitespace-pre-wrap font-sans text-sm sm:text-base leading-relaxed text-slate-200 select-none"
-                  style={{ userSelect: "none", WebkitUserSelect: "none" }}
-                  onContextMenu={(e) => e.preventDefault()}
-                >
-                  {content || textContent || "No text content recorded."}
-                </div>
-              </div>
             ) : (
-              /* Fallback Viewer */
-              <embed
-                src={url}
-                className="w-full h-[75vh] rounded-lg bg-white"
-              />
+              /* Robust Multi-Page Document Container with Native Object & Embed Fallback */
+              <div className="w-full h-[75vh] bg-slate-900 rounded-lg overflow-hidden flex items-center justify-center relative select-none">
+                {isLoading ? (
+                  <div className="text-slate-400 text-sm flex items-center gap-2">
+                    <div className="animate-spin rounded-full h-5 w-5 border-2 border-indigo-500 border-t-transparent" />
+                    Preparing document...
+                  </div>
+                ) : renderUrl ? (
+                  isImageFile ? (
+                    <img
+                      src={renderUrl}
+                      alt={fileName}
+                      className="max-h-[75vh] max-w-full object-contain mx-auto pointer-events-none select-none"
+                      draggable={false}
+                      onContextMenu={(e) => e.preventDefault()}
+                    />
+                  ) : (
+                    <object
+                      data={`${renderUrl}#toolbar=0&navpanes=0`}
+                      type="application/pdf"
+                      className="w-full h-full border-0 rounded-lg bg-white"
+                    >
+                      <embed
+                        src={`${renderUrl}#toolbar=0&navpanes=0`}
+                        type="application/pdf"
+                        className="w-full h-full border-0 rounded-lg bg-white"
+                      />
+                    </object>
+                  )
+                ) : (
+                  <div className="text-amber-400 text-sm">Document could not be displayed.</div>
+                )}
+              </div>
             )}
           </div>
         </div>

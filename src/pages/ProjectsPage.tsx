@@ -608,23 +608,34 @@ export default function ProjectsPage() {
 									</p>
 									{Array.isArray(project.files) && project.files.length > 0 && (
 										<div className="mt-3 flex flex-wrap items-center gap-1.5">
-											{project.files.slice(0, 2).map((f: any, idx: number) => (
-												<button
+											{project.files.map((f: any, idx: number) => (
+												<div
 													key={idx}
-													type="button"
-													onClick={() => void handleOpenCardFile(project, f)}
-													className="inline-flex items-center gap-1 rounded-md bg-white/[.04] hover:bg-violet-500/20 px-2 py-0.5 text-[11px] text-zinc-300 hover:text-violet-200 border border-white/[.06] transition cursor-pointer max-w-[140px]"
-													title={`Protected study preview: ${f.name}`}
+													className="inline-flex items-center gap-1.5 rounded-md bg-white/[.04] hover:bg-white/[.08] px-2 py-0.5 text-[11px] text-zinc-300 border border-white/[.06] transition"
 												>
-													<FileText size={11} className="text-cyan-300 shrink-0" />
-													<span className="truncate">{f.name}</span>
-												</button>
+													<button
+														type="button"
+														onClick={() => void handleOpenCardFile(project, f)}
+														className="inline-flex items-center gap-1 hover:text-cyan-200 transition cursor-pointer max-w-[140px] truncate"
+														title={`Open protected study viewer: ${f.name}`}
+													>
+														<FileText size={11} className="text-cyan-300 shrink-0" />
+														<span className="truncate">{f.name}</span>
+													</button>
+													<button
+														type="button"
+														onClick={(e) => {
+															e.stopPropagation();
+															void handleDeleteFileFromCard(project.id, f);
+														}}
+														className="text-zinc-500 hover:text-rose-400 p-0.5 rounded transition cursor-pointer"
+														title={`Delete ${f.name}`}
+														aria-label={`Delete ${f.name}`}
+													>
+														<Trash2 size={11} />
+													</button>
+												</div>
 											))}
-											{project.files.length > 2 && (
-												<span className="text-[10px] text-zinc-500 font-medium">
-													+{project.files.length - 2} more
-												</span>
-											)}
 										</div>
 									)}
 								</div>
@@ -693,6 +704,12 @@ export default function ProjectsPage() {
 
 			{previewFile && (
 				<ProtectedFileViewerModal
+					file={{
+						name: previewFile.name,
+						url: previewFile.url,
+						type: previewFile.type,
+						size: previewFile.size,
+					}}
 					title={previewFile.name}
 					type="file"
 					fileUrl={previewFile.url}
