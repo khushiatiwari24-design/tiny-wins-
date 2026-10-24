@@ -13,6 +13,9 @@ type Project = {
 	owner_id: string;
 	created_at?: string;
 	materials?: any[];
+	files?: any[];
+	created_by?: string;
+	creator_email?: string;
 };
 
 const LOCAL_PROJECTS_KEY = "tiny_wins_projects";
@@ -64,6 +67,14 @@ export default function ProjectsPage() {
 	const [saving, setSaving] = useState(false);
 	const [copiedId, setCopiedId] = useState<string | null>(null);
 
+	const currentUser = session?.user
+		? {
+				id: session.user.id,
+				email: session.user.email,
+				role: profile?.role || "student",
+		  }
+		: null;
+
 	const load = async () => {
 		setLoading(true);
 		const allMap = new Map<string, Project>();
@@ -72,7 +83,7 @@ export default function ProjectsPage() {
 			// 1. Fetch created or visible projects from Supabase
 			const { data: dbProjects, error } = await requireSupabase()
 				.from("projects")
-				.select("id,title,description,type,join_code,owner_id,created_at,materials")
+				.select("id,title,description,type,join_code,owner_id,created_at,materials,files")
 				.order("created_at", { ascending: false });
 
 			if (!error && dbProjects) {
@@ -83,7 +94,7 @@ export default function ProjectsPage() {
 			if (session?.user?.id) {
 				const { data: memberRows } = await requireSupabase()
 					.from("project_members")
-					.select("project:projects(id,title,description,type,join_code,owner_id,created_at,materials)")
+					.select("project:projects(id,title,description,type,join_code,owner_id,created_at,materials,files)")
 					.eq("user_id", session.user.id);
 
 				if (memberRows) {
@@ -151,6 +162,7 @@ export default function ProjectsPage() {
 		const localJoined = getLocalJoinedProjects().filter((p) => p.id !== project.id);
 		saveLocalJoinedProjects(localJoined);
 		localStorage.removeItem(`tiny_wins_notes_${project.id}`);
+		localStorage.removeItem(`tiny_wins_project_${project.id}_files`);
 
 		setProjects((prev) => prev.filter((p) => p.id !== project.id));
 		setMessage(`Deleted project "${project.title}".`);
@@ -205,8 +217,10 @@ export default function ProjectsPage() {
 			type: profile?.role === "teacher" ? "class" : "personal",
 			join_code: joinCode,
 			owner_id: userId,
+			created_by: userId,
 			created_at: new Date().toISOString(),
 			materials: [],
+			files: [],
 		};
 
 		try {
@@ -219,8 +233,9 @@ export default function ProjectsPage() {
 					type: profile?.role === "teacher" ? "class" : "personal",
 					join_code: joinCode,
 					materials: [],
+					files: [],
 				})
-				.select("id,title,description,type,join_code,owner_id,created_at,materials")
+				.select("id,title,description,type,join_code,owner_id,created_at,materials,files")
 				.maybeSingle();
 
 			if (!error && data) {
@@ -248,85 +263,81 @@ export default function ProjectsPage() {
 		setSaving(true);
 		setMessage("");
 
-		// Normalize: uppercase and remove spaces
+		// Standardize join code: uppercase, remove spaces
 		const cleanCode = rawCode.toUpperCase().replace(/\s+/g, "");
-		const strippedCode = cleanCode.replace(/-/g, "");
 
 		try {
-			let foundProject: Project | null = null;
+			// 1. Try High-Reliability Security Definer Join RPC first
+			let rpcSucceeded = false;
+			let rpcProject: any = null;
 
-			// 1. Try secure RPC join_project_by_code in Supabase
 			try {
-				const { data: rpcData, error: rpcError } = await requireSupabase().rpc("join_project_by_code", {
-					code_input: cleanCode,
-				});
+				const { data: rpcData, error: rpcError } = await requireSupabase().rpc(
+					"join_project_by_code",
+					{ code_input: cleanCode }
+				);
 
-				if (!rpcError && rpcData?.success && rpcData?.project) {
-					foundProject = rpcData.project as Project;
+				if (!rpcError && rpcData) {
+					if (rpcData.success && rpcData.project) {
+						rpcSucceeded = true;
+						rpcProject = rpcData.project;
+					}
 				}
 			} catch (rpcErr) {
-				console.warn("RPC join failed, falling back to direct query:", rpcErr);
+				console.warn("RPC join attempt error:", rpcErr);
 			}
 
-			// 2. Direct table lookup with join_code, description [CODE:...], or title
-			if (!foundProject) {
-				try {
-					const { data: projectData } = await requireSupabase()
-						.from("projects")
-						.select("id, title, description, type, join_code, owner_id, created_at, materials")
-						.or(`join_code.ilike.${cleanCode},join_code.ilike.${strippedCode},description.ilike.%${cleanCode}%,description.ilike.%${strippedCode}%,title.ilike.%${cleanCode}%`)
-						.maybeSingle();
+			let foundProject: Project | null = null;
 
-					if (projectData) {
-						foundProject = projectData as Project;
+			if (rpcSucceeded && rpcProject) {
+				foundProject = {
+					id: rpcProject.id,
+					title: rpcProject.title || `Classroom (${cleanCode})`,
+					description: rpcProject.description || `Shared classroom for ${cleanCode}`,
+					type: rpcProject.type || "class",
+					join_code: rpcProject.join_code || cleanCode,
+					owner_id: rpcProject.owner_id || "teacher",
+					created_at: rpcProject.created_at || new Date().toISOString(),
+					materials: rpcProject.materials || [],
+					files: rpcProject.files || [],
+				};
+			} else {
+				// 2. Direct table queries if RPC didn't return project
+				const { data: exactProjects } = await requireSupabase()
+					.from("projects")
+					.select("id,title,description,type,join_code,owner_id,created_at,materials,files")
+					.ilike("join_code", cleanCode);
+
+				if (exactProjects && exactProjects.length > 0) {
+					foundProject = exactProjects[0];
+				}
+
+				if (!foundProject) {
+					const { data: descMatches } = await requireSupabase()
+						.from("projects")
+						.select("id,title,description,type,join_code,owner_id,created_at,materials,files")
+						.ilike("description", `%${cleanCode}%`);
+
+					if (descMatches && descMatches.length > 0) {
+						foundProject = descMatches[0];
 					}
-				} catch (e) {
-					console.warn("Supabase or lookup error, trying fallback select:", e);
 				}
 			}
 
-			// If not found, search all candidate projects from Supabase
+			// 3. Fallback: check localStorage for any project with matching join_code
 			if (!foundProject) {
-				try {
-					const { data: allCandidates } = await requireSupabase()
-						.from("projects")
-						.select("id, title, description, type, join_code, owner_id, created_at, materials");
-
-					if (allCandidates) {
-						const match = allCandidates.find(
-							(p) =>
-								(p.join_code || "").replace(/-/g, "").toUpperCase() === strippedCode ||
-								(p.join_code || "").toUpperCase() === cleanCode ||
-								(p.description || "").toUpperCase().includes(strippedCode) ||
-								(p.description || "").toUpperCase().includes(cleanCode) ||
-								(p.title || "").toUpperCase().includes(cleanCode)
-						);
-						if (match) foundProject = match as Project;
-					}
-				} catch (e) {
-					console.warn("Candidate search failed:", e);
-				}
-			}
-
-			// 3. Fallback: check localStorage
-			if (!foundProject) {
-				const localOwned = getLocalProjects();
-				const localJoined = getLocalJoinedProjects();
-				const allLocal = [...localOwned, ...localJoined];
-				const match = allLocal.find(
+				const allLocal = [...getLocalProjects(), ...getLocalJoinedProjects()];
+				const localFound = allLocal.find(
 					(p) =>
-						(p.join_code || "").replace(/-/g, "").toUpperCase() === strippedCode ||
-						(p.join_code || "").toUpperCase() === cleanCode ||
-						(p.description || "").toUpperCase().includes(strippedCode) ||
-						(p.description || "").toUpperCase().includes(cleanCode) ||
-						(p.title || "").toUpperCase().includes(cleanCode)
+						(p.join_code && p.join_code.toUpperCase() === cleanCode) ||
+						(p.description && p.description.includes(cleanCode))
 				);
-				if (match) {
-					foundProject = match;
+				if (localFound) {
+					foundProject = localFound;
 				}
 			}
 
-			// 4. Resilient cross-device fallback: Never block user with "Join code was not found"
+			// 4. Construct fallback classroom if network/permissions block
 			if (!foundProject) {
 				const fallbackId = `joined-${cleanCode.toLowerCase().replace(/[^a-z0-9]/g, "")}-${Date.now().toString(36)}`;
 				foundProject = {
@@ -338,11 +349,12 @@ export default function ProjectsPage() {
 					owner_id: "shared-teacher",
 					created_at: new Date().toISOString(),
 					materials: [],
+					files: [],
 				};
 			}
 
-			// Record membership in Supabase
-			if (session?.user?.id) {
+			// Upsert membership in Supabase if logged in
+			if (session?.user?.id && !foundProject.id.startsWith("joined-")) {
 				try {
 					await requireSupabase()
 						.from("project_members")
@@ -376,6 +388,7 @@ export default function ProjectsPage() {
 				owner_id: "shared-teacher",
 				created_at: new Date().toISOString(),
 				materials: [],
+				files: [],
 			};
 			const joinedList = getLocalJoinedProjects();
 			saveLocalJoinedProjects([fallbackProj, ...joinedList.filter((p) => p.id !== fallbackProj.id)]);
@@ -413,7 +426,7 @@ export default function ProjectsPage() {
 					<button
 						type="button"
 						onClick={() => setMessage("")}
-						className="text-xs text-violet-300 hover:text-white ml-2 underline"
+						className="text-xs text-violet-300 hover:text-white ml-2 underline cursor-pointer"
 					>
 						Dismiss
 					</button>
@@ -442,7 +455,7 @@ export default function ProjectsPage() {
 					/>
 					<button
 						disabled={saving}
-						className="button mt-4 inline-flex items-center gap-2 bg-violet-400 text-zinc-950 font-medium disabled:cursor-not-allowed disabled:opacity-50"
+						className="button mt-4 inline-flex items-center gap-2 bg-violet-400 text-zinc-950 font-medium disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
 					>
 						<Plus size={16} />
 						{saving ? "Saving..." : "Create project"}
@@ -467,7 +480,7 @@ export default function ProjectsPage() {
 					</p>
 					<button
 						disabled={saving}
-						className="button mt-4 font-medium disabled:cursor-not-allowed disabled:opacity-50"
+						className="button mt-4 font-medium disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
 					>
 						{saving ? "Joining..." : "Join with code"}
 					</button>
@@ -484,96 +497,124 @@ export default function ProjectsPage() {
 				</div>
 			) : (
 				<div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-					{projects.map((project) => (
-						<div
-							key={project.id}
-							className="group relative flex flex-col justify-between rounded-2xl border border-white/[.08] bg-white/[.035] p-5 transition duration-200 hover:-translate-y-1 hover:border-cyan-300/30 hover:bg-white/[.06] hover:shadow-xl hover:shadow-cyan-950/20"
-						>
-							<div>
-								<div className="flex items-start justify-between gap-4">
-									<span className="rounded-full bg-cyan-300/10 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[.14em] text-cyan-200">
-										{project.type}
-									</span>
-									<div className="flex items-center gap-1.5">
-										{project.owner_id === session?.user?.id ? (
-											<button
-												type="button"
-												onClick={(e) => handleDeleteProject(e, project)}
-												className="rounded-lg p-1.5 text-zinc-500 hover:bg-rose-500/15 hover:text-rose-400 transition"
-												title="Delete project"
-												aria-label="Delete project"
+					{projects.map((project) => {
+						// Strict creator ownership check
+						const isCreator = Boolean(
+							((project as any).created_by && (project as any).created_by === currentUser?.id) ||
+							(project.owner_id && project.owner_id === currentUser?.id) ||
+							((project as any).creator_email && (project as any).creator_email === currentUser?.email) ||
+							currentUser?.role?.toLowerCase() === "teacher"
+						);
+
+						return (
+							<div
+								key={project.id}
+								className="group relative flex flex-col justify-between rounded-2xl border border-white/[.08] bg-white/[.035] p-5 transition duration-200 hover:-translate-y-1 hover:border-cyan-300/30 hover:bg-white/[.06] hover:shadow-xl hover:shadow-cyan-950/20"
+							>
+								<div>
+									<div className="flex items-start justify-between gap-4">
+										<span className="rounded-full bg-cyan-300/10 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[.14em] text-cyan-200">
+											{project.type}
+										</span>
+										<div className="flex items-center gap-1.5">
+											{isCreator ? (
+												<button
+													type="button"
+													onClick={(e) => handleDeleteProject(e, project)}
+													className="rounded-lg p-1.5 text-zinc-500 hover:bg-rose-500/15 hover:text-rose-400 transition cursor-pointer"
+													title="Delete project"
+													aria-label="Delete project"
+												>
+													<Trash2 size={16} />
+												</button>
+											) : (
+												<button
+													type="button"
+													onClick={(e) => handleLeaveClass(e, project)}
+													className="rounded-lg p-1.5 text-zinc-500 hover:bg-amber-500/15 hover:text-amber-400 transition cursor-pointer"
+													title="Leave class"
+													aria-label="Leave class"
+												>
+													<LogOut size={16} />
+												</button>
+											)}
+											<Link
+												to={`/projects/${project.id}`}
+												className="rounded-lg p-1.5 text-zinc-500 hover:bg-white/[.08] hover:text-cyan-200 transition"
+												aria-label={`Open ${project.title}`}
 											>
-												<Trash2 size={16} />
-											</button>
-										) : (
+												<ArrowUpRight size={18} />
+											</Link>
+										</div>
+									</div>
+
+									<h2 className="mt-4 text-xl font-medium text-white">{project.title}</h2>
+									<p className="mt-2 min-h-10 text-sm leading-6 text-zinc-400">
+										{project.description || "No description yet."}
+									</p>
+								</div>
+
+								<div className="mt-5 border-t border-white/[.06] pt-4">
+									{/* Strict Join Code visibility: only teacher/creator sees Join Code */}
+									{isCreator ? (
+										project.join_code ? (
+											<div className="flex items-center justify-between gap-2 rounded-xl bg-white/[.03] px-3 py-2 border border-white/[.05]">
+												<div className="min-w-0">
+													<p className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold">Join Code</p>
+													<p className="font-mono text-xs font-semibold text-violet-200 tracking-wider">
+														{project.join_code}
+													</p>
+												</div>
+												<button
+													type="button"
+													onClick={(e) => copyCodeToClipboard(e, project)}
+													className="inline-flex items-center gap-1.5 rounded-lg border border-violet-400/30 bg-violet-400/10 px-2.5 py-1 text-xs font-medium text-violet-200 hover:bg-violet-400/20 transition cursor-pointer"
+													title="Copy join code to share"
+												>
+													{copiedId === project.id ? (
+														<>
+															<Check size={12} className="text-emerald-400" />
+															<span className="text-emerald-400">Copied!</span>
+														</>
+													) : (
+														<>
+															<Copy size={12} />
+															<span>Copy</span>
+														</>
+													)}
+												</button>
+											</div>
+										) : null
+									) : (
+										/* Student / Enrolled Member: Completely hide join code box and copy button */
+										<div className="flex items-center justify-between gap-2 rounded-xl bg-indigo-500/[.06] px-3 py-2 border border-indigo-500/20">
+											<div className="text-xs px-2.5 py-1 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 font-medium">
+												🎓 Enrolled Member
+											</div>
 											<button
 												type="button"
 												onClick={(e) => handleLeaveClass(e, project)}
-												className="rounded-lg p-1.5 text-zinc-500 hover:bg-amber-500/15 hover:text-amber-400 transition"
-												title="Leave class"
-												aria-label="Leave class"
+												className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-amber-300 transition cursor-pointer"
+												title="Leave this classroom"
 											>
-												<LogOut size={16} />
+												<LogOut size={12} />
+												<span>Leave</span>
 											</button>
-										)}
-										<Link
-											to={`/projects/${project.id}`}
-											className="rounded-lg p-1.5 text-zinc-500 hover:bg-white/[.08] hover:text-cyan-200 transition"
-											aria-label={`Open ${project.title}`}
-										>
-											<ArrowUpRight size={18} />
-										</Link>
-									</div>
-								</div>
-
-								<h2 className="mt-4 text-xl font-medium text-white">{project.title}</h2>
-								<p className="mt-2 min-h-10 text-sm leading-6 text-zinc-400">
-									{project.description || "No description yet."}
-								</p>
-							</div>
-
-							<div className="mt-5 border-t border-white/[.06] pt-4">
-								{project.join_code && (
-									<div className="flex items-center justify-between gap-2 rounded-xl bg-white/[.03] px-3 py-2 border border-white/[.05]">
-										<div className="min-w-0">
-											<p className="text-[10px] uppercase tracking-wider text-zinc-500">Join Code</p>
-											<p className="font-mono text-xs font-semibold text-violet-200 tracking-wider">
-												{project.join_code}
-											</p>
 										</div>
-										<button
-											type="button"
-											onClick={(e) => copyCodeToClipboard(e, project)}
-											className="inline-flex items-center gap-1.5 rounded-lg border border-violet-400/30 bg-violet-400/10 px-2.5 py-1 text-xs font-medium text-violet-200 hover:bg-violet-400/20 transition"
-											title="Copy join code to share"
-										>
-											{copiedId === project.id ? (
-												<>
-													<Check size={12} className="text-emerald-400" />
-													<span className="text-emerald-400">Copied!</span>
-												</>
-											) : (
-												<>
-													<Copy size={12} />
-													<span>Copy</span>
-												</>
-											)}
-										</button>
-									</div>
-								)}
+									)}
 
-								<Link
-									to={`/projects/${project.id}`}
-									className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-zinc-300 transition group-hover:text-cyan-300"
-								>
-									Open Workspace <ArrowUpRight size={14} />
-								</Link>
+									<Link
+										to={`/projects/${project.id}`}
+										className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-zinc-300 transition group-hover:text-cyan-300"
+									>
+										Open Workspace <ArrowUpRight size={14} />
+									</Link>
+								</div>
 							</div>
-						</div>
-					))}
+						);
+					})}
 				</div>
 			)}
 		</section>
 	);
 }
-

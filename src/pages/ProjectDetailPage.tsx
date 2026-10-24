@@ -9,11 +9,24 @@ import ProtectedContentViewer from "../components/projects/ProtectedContentViewe
 import {
   uploadProjectFile,
   fetchProjectFiles,
-  removeLocalProjectFile,
+  deleteProjectFile,
   type StoredProjectFile as StoredFile,
 } from "../lib/projectFiles";
 
-type Project = { id: string; title: string; description: string; type: string; join_code: string; owner_id: string; created_at: string; materials?: Note[] };
+type Project = {
+  id: string;
+  title: string;
+  description: string;
+  type: string;
+  join_code: string;
+  owner_id: string;
+  created_at: string;
+  materials?: any[];
+  files?: any[];
+  created_by?: string;
+  creator_email?: string;
+};
+
 type Member = { user_id: string; role: string; joined_at: string; profile: { full_name: string; email: string } | null };
 type Note = { id: string; title: string; content: string; author_id: string; created_at: string; author: { full_name: string } | null };
 type Tab = "Overview" | "Tasks" | "Files" | "Notes" | "Members" | "Activity";
@@ -26,7 +39,9 @@ export default function ProjectDetailPage() {
   const navigate = useNavigate();
   const { session, profile } = useAuth();
   const { tasks: allTasks, categories, save, remove, toggle } = useTasks(session?.user.id, projectId);
+
   const [project, setProject] = useState<Project | null>(null);
+  const [ownerProfile, setOwnerProfile] = useState<{ full_name: string; email: string } | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [files, setFiles] = useState<StoredFile[]>([]);
@@ -52,10 +67,25 @@ export default function ProjectDetailPage() {
   const [preview, setPreview] = useState<{ file: StoredFile; url: string } | null>(null);
   const [viewingNote, setViewingNote] = useState<Note | null>(null);
 
+  const currentUser = session?.user
+    ? {
+        id: session.user.id,
+        email: session.user.email,
+        role: profile?.role || "student",
+      }
+    : null;
+
+  // Strict creator ownership check
+  const isCreator = Boolean(
+    (project && (project as any).created_by && (project as any).created_by === currentUser?.id) ||
+    (project?.owner_id && project.owner_id === currentUser?.id) ||
+    (project && (project as any).creator_email && (project as any).creator_email === currentUser?.email) ||
+    currentUser?.role?.toLowerCase() === "teacher"
+  );
+
   const projectTasks = useMemo(() => allTasks.filter(task => task.projectId === projectId), [allTasks, projectId]);
   const completedCount = projectTasks.filter(task => task.completed).length;
   const progress = projectTasks.length ? Math.round(completedCount / projectTasks.length * 100) : 0;
-  const isOwner = project?.owner_id === session?.user.id;
 
   const loadProjectData = async () => {
     if (!projectId) { setError("This project link is missing its project ID."); setLoading(false); return; }
@@ -63,13 +93,13 @@ export default function ProjectDetailPage() {
     const db = requireSupabase();
 
     let projectData: any = null;
-    let ownerProfile: any = null;
+    let fetchedOwnerProfile: any = null;
     let membersData: any[] = [];
     let notesData: any[] = [];
 
     try {
       const [projectResult, membersResult, notesResult] = await Promise.all([
-        db.from("projects").select("id,title,description,type,join_code,owner_id,created_at,materials").eq("id", projectId).maybeSingle(),
+        db.from("projects").select("id,title,description,type,join_code,owner_id,created_at,materials,files").eq("id", projectId).maybeSingle(),
         db.from("project_members").select("user_id,role,joined_at,profiles(full_name,email)").eq("project_id", projectId).order("joined_at"),
         db.from("notes").select("id,title,content,author_id,created_at,profiles(full_name)").eq("project_id", projectId).order("created_at", { ascending: false }),
       ]);
@@ -77,7 +107,8 @@ export default function ProjectDetailPage() {
       if (projectResult?.data) {
         projectData = projectResult.data;
         const ownerProfileResult = await db.from("profiles").select("full_name,email").eq("id", projectData.owner_id).maybeSingle();
-        ownerProfile = ownerProfileResult?.data || null;
+        fetchedOwnerProfile = ownerProfileResult?.data || null;
+        setOwnerProfile(fetchedOwnerProfile);
       }
       if (membersResult?.data) membersData = membersResult.data;
       if (notesResult?.data) notesData = notesResult.data;
@@ -124,12 +155,13 @@ export default function ProjectDetailPage() {
       author: Array.isArray(row.profiles) ? row.profiles[0] ?? null : row.profiles,
     }));
 
-    // Also include materials array directly from project JSONB column
-    const projectMaterials: Note[] = Array.isArray(projectData.materials) ? projectData.materials : [];
+    // Separate notes vs file materials
+    const projectMaterials: any[] = Array.isArray(projectData.materials) ? projectData.materials : [];
+    const noteItems: Note[] = projectMaterials.filter((m: any) => m && m.content && !m.mimetype && !m.path);
 
     const notesMap = new Map<string, Note>();
     fetchedNotes.forEach((n) => notesMap.set(n.id, n));
-    projectMaterials.forEach((n) => {
+    noteItems.forEach((n) => {
       if (!notesMap.has(n.id)) notesMap.set(n.id, n);
     });
     localNotes.forEach((n) => {
@@ -149,24 +181,36 @@ export default function ProjectDetailPage() {
         user_id: projectData.owner_id,
         role: "teacher",
         joined_at: projectData.created_at || new Date().toISOString(),
-        profile: ownerProfile || { full_name: "Project Lead", email: "" },
+        profile: fetchedOwnerProfile || { full_name: "Project Lead", email: "" },
       },
       ...joinedMembers,
     ]);
 
     setLoading(false);
 
+    // Load files across Supabase projects table JSONB, storage bucket, and local fallback
     try {
-      await loadFiles(projectId, [projectData.owner_id, ...membersData.map((member) => member.user_id)]);
+      const allMemberIds = [projectData.owner_id, ...membersData.map((m) => m.user_id)];
+      await loadFiles(projectId, allMemberIds);
     } catch {}
   };
 
   const syncMaterials = async () => {
     setSyncing(true);
-    await loadProjectData();
-    setSyncing(false);
-    setNotice("Materials and project data synced with class.");
-    window.setTimeout(() => setNotice(""), 3500);
+    try {
+      if (projectId) {
+        const loadedFiles = await fetchProjectFiles(projectId, members.map((m) => m.user_id));
+        setFiles(loadedFiles);
+      }
+      await loadProjectData();
+      setNotice("✅ Latest materials synced successfully!");
+    } catch (err: any) {
+      console.warn("Sync warning:", err);
+      setNotice("Materials synced with available sources.");
+    } finally {
+      setSyncing(false);
+      window.setTimeout(() => setNotice(""), 3500);
+    }
   };
 
   const handleDeleteProject = async () => {
@@ -188,6 +232,7 @@ export default function ProjectDetailPage() {
       const localJoined = JSON.parse(localStorage.getItem("tiny_wins_joined_projects") || "[]");
       localStorage.setItem("tiny_wins_joined_projects", JSON.stringify(localJoined.filter((p: any) => p.id !== project.id)));
       localStorage.removeItem(`tiny_wins_notes_${project.id}`);
+      localStorage.removeItem(`tiny_wins_project_${project.id}_files`);
     } catch {}
 
     navigate("/projects");
@@ -292,10 +337,12 @@ export default function ProjectDetailPage() {
     setError("");
 
     try {
+      const uploaderName = profile?.full_name || session?.user?.email?.split("@")[0] || "Teacher";
       const { file: storedFile, message } = await uploadProjectFile(
         projectId,
         session.user.id,
-        file
+        file,
+        uploaderName
       );
 
       setFiles((prev) => [storedFile, ...prev.filter((f) => f.name !== storedFile.name)]);
@@ -312,41 +359,42 @@ export default function ProjectDetailPage() {
   };
 
   const openFile = async (file: StoredFile) => {
-    if (!projectId || !session) return;
+    if (!projectId) return;
     if (file.url) {
       setPreview({ file, url: file.url });
       return;
     }
+
     try {
       const { data, error: downloadError } = await requireSupabase()
         .storage.from("project-files")
         .createSignedUrl(file.path, 3600);
 
-      if (downloadError) {
-        if (file.url) setPreview({ file, url: file.url });
-        else setError(`Unable to preview file: ${downloadError.message}`);
-      } else if (data?.signedUrl) {
+      if (data?.signedUrl) {
         setPreview({ file, url: data.signedUrl });
+      } else {
+        const { data: pubData } = requireSupabase().storage.from("project-files").getPublicUrl(file.path);
+        if (pubData?.publicUrl) {
+          setPreview({ file, url: pubData.publicUrl });
+        } else {
+          setError(`Unable to preview file: ${downloadError?.message || "File unavailable"}`);
+        }
       }
     } catch (err: any) {
-      if (file.url) setPreview({ file, url: file.url });
-      else setError(`Unable to preview file: ${err?.message || "Storage error"}`);
+      setError(`Unable to preview file: ${err?.message || "Storage error"}`);
     }
   };
 
   const deleteFile = async (file: StoredFile) => {
+    if (!projectId) return;
     const confirmed = window.confirm(`Are you sure you want to delete "${file.name}"?`);
     if (!confirmed) return;
 
     setFiles((prev) => prev.filter((f) => f.name !== file.name && f.path !== file.path));
-    if (projectId) {
-      removeLocalProjectFile(projectId, file.name);
-    }
-
     try {
-      await requireSupabase().storage.from("project-files").remove([file.path]);
+      await deleteProjectFile(projectId, file.name, file.path);
     } catch (err) {
-      console.warn("Could not remove file from Supabase storage:", err);
+      console.warn("Could not remove file:", err);
     }
     setNotice("File deleted.");
     window.setTimeout(() => setNotice(""), 3000);
@@ -452,41 +500,63 @@ export default function ProjectDetailPage() {
         </div>
 
         <div className="flex flex-col gap-2 min-w-[200px]">
-          <div className="rounded-2xl border border-violet-300/20 bg-violet-300/10 p-3 sm:p-4">
-            <p className="text-[10px] uppercase tracking-[.16em] text-violet-200">Join code</p>
-            <div className="mt-1.5 sm:mt-2 flex items-center justify-between gap-2">
-              <strong className="font-mono text-lg sm:text-xl tracking-wider text-white">
-                {project.join_code}
-              </strong>
-              <button
-                type="button"
-                onClick={() => void copyCode()}
-                className="button px-2.5 py-1 text-xs"
-                title="Copy join code"
-              >
-                <Clipboard size={14} />
-                <span className="sr-only">{copyLabel}</span>
-              </button>
+          {/* Issue 2: Restrict Join Code visibility exclusively to Teacher / Project Creator */}
+          {isCreator ? (
+            <div className="rounded-2xl border border-violet-300/20 bg-violet-300/10 p-3 sm:p-4">
+              <p className="text-[10px] uppercase tracking-[.16em] text-violet-200 font-semibold">Join code</p>
+              <div className="mt-1.5 sm:mt-2 flex items-center justify-between gap-2">
+                <strong className="font-mono text-lg sm:text-xl tracking-wider text-white">
+                  {project.join_code}
+                </strong>
+                <button
+                  type="button"
+                  onClick={() => void copyCode()}
+                  className="button px-2.5 py-1 text-xs cursor-pointer"
+                  title="Copy join code"
+                >
+                  <Clipboard size={14} />
+                  <span className="sr-only">{copyLabel}</span>
+                </button>
+              </div>
+              <p className="mt-1 text-[10px] sm:text-[11px] text-violet-200/70">{copyLabel}</p>
             </div>
-            <p className="mt-1 text-[10px] sm:text-[11px] text-violet-200/70">{copyLabel}</p>
-          </div>
+          ) : (
+            /* Student / Enrolled Member: Show classroom status badge instead of join code */
+            <div className="rounded-2xl border border-indigo-400/20 bg-indigo-500/10 p-3 sm:p-4 space-y-1">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] uppercase tracking-[.16em] text-indigo-300 font-semibold">
+                  Classroom Workspace
+                </span>
+                <span className="text-[10px] px-1.5 py-0.2 rounded bg-indigo-400/20 text-indigo-200 font-medium">
+                  Enrolled
+                </span>
+              </div>
+              <p className="text-xs sm:text-sm font-medium text-white truncate mt-1">
+                Instructor:{" "}
+                <span className="text-cyan-300 font-semibold">
+                  {ownerProfile?.full_name || members[0]?.profile?.full_name || "Lead Teacher"}
+                </span>
+              </p>
+              <p className="text-[10px] text-indigo-200/70">Anti-screenshot protected workspace</p>
+            </div>
+          )}
 
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => void syncMaterials()}
               disabled={syncing}
-              className="button flex-1 inline-flex items-center justify-center gap-1.5 border border-cyan-400/30 bg-cyan-400/10 text-cyan-200 text-xs px-3 py-1.5 hover:bg-cyan-400/20 transition"
+              className="button flex-1 inline-flex items-center justify-center gap-1.5 border border-cyan-400/30 bg-cyan-400/10 text-cyan-200 text-xs px-3 py-1.5 hover:bg-cyan-400/20 transition cursor-pointer"
               title="Refresh & sync study materials from class"
             >
               <RefreshCw size={13} className={syncing ? "animate-spin" : ""} />
               <span>{syncing ? "Syncing..." : "Sync Materials"}</span>
             </button>
-            {isOwner ? (
+            {isCreator ? (
               <button
                 type="button"
                 onClick={() => void handleDeleteProject()}
-                className="button inline-flex items-center gap-1.5 border border-rose-500/30 bg-rose-500/10 text-rose-300 text-xs px-3 py-1.5 hover:bg-rose-500/20 transition"
+                className="button inline-flex items-center gap-1.5 border border-rose-500/30 bg-rose-500/10 text-rose-300 text-xs px-3 py-1.5 hover:bg-rose-500/20 transition cursor-pointer"
                 title="Delete project"
               >
                 <Trash2 size={13} />
@@ -496,7 +566,7 @@ export default function ProjectDetailPage() {
               <button
                 type="button"
                 onClick={() => void handleLeaveClass()}
-                className="button inline-flex items-center gap-1.5 border border-amber-500/30 bg-amber-500/10 text-amber-300 text-xs px-3 py-1.5 hover:bg-amber-500/20 transition"
+                className="button inline-flex items-center gap-1.5 border border-amber-500/30 bg-amber-500/10 text-amber-300 text-xs px-3 py-1.5 hover:bg-amber-500/20 transition cursor-pointer"
                 title="Leave class"
               >
                 <LogOut size={13} />
@@ -547,12 +617,22 @@ export default function ProjectDetailPage() {
     <div className="mt-6 max-w-6xl">
       {activeTab === "Overview" && <Overview project={project} tasks={projectTasks} members={members} activity={activity} progress={progress} />}
       {activeTab === "Tasks" && <TaskSection tasks={projectTasks} categories={categories} currentUserId={session?.user.id} showForm={showTaskForm} setShowForm={setShowTaskForm} onSubmit={submitTask} saving={taskSaving} title={taskTitle} setTitle={setTaskTitle} description={taskDescription} setDescription={setTaskDescription} category={taskCategory} setCategory={setTaskCategory} priority={taskPriority} setPriority={setTaskPriority} dueDate={taskDueDate} setDueDate={setTaskDueDate} dueTime={taskDueTime} setDueTime={setTaskDueTime} onToggle={task => void toggle(task)} onDelete={task => void remove(task.id)} />}
-      {activeTab === "Files" && <FilesSection files={files} uploading={uploading} onUpload={uploadFile} onOpen={file => void openFile(file)} onDelete={file => void deleteFile(file)} />}
+      {activeTab === "Files" && (
+        <FilesSection
+          files={files}
+          uploading={uploading}
+          onUpload={uploadFile}
+          onOpen={(file) => void openFile(file)}
+          onDelete={(file) => void deleteFile(file)}
+          canDelete={isCreator}
+          currentUserId={session?.user?.id}
+        />
+      )}
       {activeTab === "Notes" && (
         <NotesSection
           notes={notes}
-          canAdd={Boolean(isOwner || profile?.role === "teacher")}
-          isOwner={isOwner}
+          canAdd={Boolean(isCreator || profile?.role === "teacher")}
+          isOwner={isCreator}
           currentUserId={session?.user.id}
           showForm={showNoteForm}
           setShowForm={setShowNoteForm}
@@ -577,6 +657,7 @@ export default function ProjectDetailPage() {
         type="file"
         fileUrl={preview.url}
         fileMimeType={fileMimeType(preview.file)}
+        authorName={preview.file.uploader_name || ownerProfile?.full_name || "Teacher"}
         createdAt={preview.file.created_at ? formatDate(preview.file.created_at) : undefined}
         onClose={() => setPreview(null)}
       />
@@ -598,12 +679,9 @@ function Overview({ project, tasks, members, activity, progress }: { project: Pr
 function Stat({ label, value }: { label: string; value: string | number }) { return <div className="rounded-xl bg-white/[.04] p-4"><p className="text-xs text-zinc-600">{label}</p><p className="mt-2 text-xl font-semibold text-white">{value}</p></div>; }
 function ActivitySection({ activity }: { activity: { date: string; text: string }[] }) { return <div className="rounded-2xl border border-white/[.08] bg-white/[.035] p-6"><h2 className="font-medium text-white">Recent activity</h2>{activity.length ? <div className="mt-5 space-y-4">{activity.map((item, index) => <div key={`${item.date}-${index}`} className="flex gap-3 text-sm"><span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-cyan-300" /><div><p className="text-zinc-300">{item.text}</p><p className="mt-1 text-xs text-zinc-600">{formatDate(item.date)}</p></div></div>)}</div> : <p className="mt-4 text-sm text-zinc-600">Activity will appear as the project moves forward.</p>}</div>; }
 
-function TaskSection({ tasks, categories, currentUserId, showForm, setShowForm, onSubmit, saving, title, setTitle, description, setDescription, category, setCategory, priority, setPriority, dueDate, setDueDate, dueTime, setDueTime, onToggle, onDelete }: { tasks: ReturnType<typeof useTasks>["tasks"]; categories: { id: string; name: string }[]; currentUserId?: string; showForm: boolean; setShowForm: (value: boolean) => void; onSubmit: (event: React.FormEvent) => void; saving: boolean; title: string; setTitle: (value: string) => void; description: string; setDescription: (value: string) => void; category: string; setCategory: (value: string) => void; priority: Priority; setPriority: (value: Priority) => void; dueDate: string; setDueDate: (value: string) => void; dueTime: string; setDueTime: (value: string) => void; onToggle: (task: ReturnType<typeof useTasks>["tasks"][number]) => void; onDelete: (task: ReturnType<typeof useTasks>["tasks"][number]) => void }) { return <div><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs uppercase tracking-[.16em] text-zinc-600">Project tasks</p><h2 className="mt-2 text-2xl font-medium text-white">Move the work forward</h2></div><button onClick={() => setShowForm(!showForm)} className="button inline-flex items-center gap-2 bg-violet-400 text-zinc-950"><Plus size={16} /> Add task</button></div>{showForm && <form onSubmit={onSubmit} className="mt-5 rounded-2xl border border-violet-300/20 bg-violet-300/[.06] p-5"><div className="grid gap-3 md:grid-cols-2"><input className="field md:col-span-2" required placeholder="Task title" value={title} onChange={event => setTitle(event.target.value)} /><textarea className="field min-h-20 md:col-span-2" placeholder="Description" value={description} onChange={event => setDescription(event.target.value)} /><select className="field" value={category} onChange={event => setCategory(event.target.value)}>{categories.map(option => <option key={option.id} value={option.name}>{option.name}</option>)}</select><select className="field" value={priority} onChange={event => setPriority(event.target.value as Priority)}><option>High</option><option>Medium</option><option>Low</option></select><input className="field" type="date" value={dueDate} onChange={event => setDueDate(event.target.value)} /><input className="field" type="time" value={dueTime} onChange={event => setDueTime(event.target.value)} /></div><div className="mt-4 flex gap-2"><button disabled={saving} className="button bg-white text-zinc-950 disabled:opacity-50">{saving ? "Adding..." : "Add task"}</button><button type="button" onClick={() => setShowForm(false)} className="button">Cancel</button></div></form>}<div className="mt-5 space-y-2">{tasks.length ? tasks.map(task => <div key={task.id} className={`flex items-center gap-3 rounded-xl border border-white/[.07] bg-white/[.035] p-4 ${task.completed ? "opacity-60" : ""}`}><button onClick={() => onToggle(task)} className={`grid h-6 w-6 shrink-0 place-items-center rounded-full border ${task.completed ? "border-white bg-white text-black" : "border-zinc-700 text-transparent hover:border-zinc-300"}`} aria-label={`Mark ${task.title} ${task.completed ? "incomplete" : "complete"}`}><Check size={13} /></button><div className="min-w-0 flex-1"><p className={`text-sm font-medium ${task.completed ? "text-zinc-500 line-through" : "text-zinc-200"}`}>{task.title}</p><p className="mt-1 text-xs text-zinc-600">{task.category}{task.dueDate ? ` · Due ${task.dueDate}` : ""}</p></div><span className="hidden text-xs text-zinc-500 sm:block">{task.priority}</span>{task.ownerId === currentUserId && <button onClick={() => onDelete(task)} className="text-xs text-zinc-600 hover:text-red-300">Delete</button>}</div>) : <div className="rounded-2xl border border-dashed border-white/[.1] px-6 py-12 text-center"><Check className="mx-auto text-zinc-700" size={24} /><p className="mt-3 text-sm text-zinc-500">No tasks in this project yet.</p></div>}</div></div>; }
+function TaskSection({ tasks, categories, currentUserId, showForm, setShowForm, onSubmit, saving, title, setTitle, description, setDescription, category, setCategory, priority, setPriority, dueDate, setDueDate, dueTime, setDueTime, onToggle, onDelete }: { tasks: ReturnType<typeof useTasks>["tasks"]; categories: { id: string; name: string }[]; currentUserId?: string; showForm: boolean; setShowForm: (value: boolean) => void; onSubmit: (event: React.FormEvent) => void; saving: boolean; title: string; setTitle: (value: string) => void; description: string; setDescription: (value: string) => void; category: string; setCategory: (value: string) => void; priority: Priority; setPriority: (value: Priority) => void; dueDate: string; setDueDate: (value: string) => void; dueTime: string; setDueTime: (value: string) => void; onToggle: (task: ReturnType<typeof useTasks>["tasks"][number]) => void; onDelete: (task: ReturnType<typeof useTasks>["tasks"][number]) => void }) { return <div><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs uppercase tracking-[.16em] text-zinc-600">Project tasks</p><h2 className="mt-2 text-2xl font-medium text-white">Move the work forward</h2></div><button onClick={() => setShowForm(!showForm)} className="button inline-flex items-center gap-2 bg-violet-400 text-zinc-950 cursor-pointer"><Plus size={16} /> Add task</button></div>{showForm && <form onSubmit={onSubmit} className="mt-5 rounded-2xl border border-violet-300/20 bg-violet-300/[.06] p-5"><div className="grid gap-3 md:grid-cols-2"><input className="field md:col-span-2" required placeholder="Task title" value={title} onChange={event => setTitle(event.target.value)} /><textarea className="field min-h-20 md:col-span-2" placeholder="Description" value={description} onChange={event => setDescription(event.target.value)} /><select className="field" value={category} onChange={event => setCategory(event.target.value)}>{categories.map(option => <option key={option.id} value={option.name}>{option.name}</option>)}</select><select className="field" value={priority} onChange={event => setPriority(event.target.value as Priority)}><option>High</option><option>Medium</option><option>Low</option></select><input className="field" type="date" value={dueDate} onChange={event => setDueDate(event.target.value)} /><input className="field" type="time" value={dueTime} onChange={event => setDueTime(event.target.value)} /></div><div className="mt-4 flex gap-2"><button disabled={saving} className="button bg-white text-zinc-950 disabled:opacity-50 cursor-pointer">{saving ? "Adding..." : "Add task"}</button><button type="button" onClick={() => setShowForm(false)} className="button cursor-pointer">Cancel</button></div></form>}<div className="mt-5 space-y-2">{tasks.length ? tasks.map(task => <div key={task.id} className={`flex items-center gap-3 rounded-xl border border-white/[.07] bg-white/[.035] p-4 ${task.completed ? "opacity-60" : ""}`}><button onClick={() => onToggle(task)} className={`grid h-6 w-6 shrink-0 place-items-center rounded-full border ${task.completed ? "border-white bg-white text-black" : "border-zinc-700 text-transparent hover:border-zinc-300"} cursor-pointer`} aria-label={`Mark ${task.title} ${task.completed ? "incomplete" : "complete"}`}><Check size={13} /></button><div className="min-w-0 flex-1"><p className={`text-sm font-medium ${task.completed ? "text-zinc-500 line-through" : "text-zinc-200"}`}>{task.title}</p><p className="mt-1 text-xs text-zinc-600">{task.category}{task.dueDate ? ` · Due ${task.dueDate}` : ""}</p></div><span className="hidden text-xs text-zinc-500 sm:block">{task.priority}</span>{task.ownerId === currentUserId && <button onClick={() => onDelete(task)} className="text-xs text-zinc-600 hover:text-red-300 cursor-pointer">Delete</button>}</div>) : <div className="rounded-2xl border border-dashed border-white/[.1] px-6 py-12 text-center"><Check className="mx-auto text-zinc-700" size={24} /><p className="mt-3 text-sm text-zinc-500">No tasks in this project yet.</p></div>}</div></div>; }
 
-const fileMimeType = (file: StoredFile) => file.metadata?.mimetype || file.mimetype || ({ pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", txt: "text/plain", csv: "text/csv", json: "application/json", mp3: "audio/mpeg", mp4: "video/mp4" }[file.name.split(".").pop()?.toLowerCase() || ""] || "application/octet-stream");
-const isImageFile = (file: StoredFile) => fileMimeType(file).startsWith("image/");
-const isPdfFile = (file: StoredFile) => fileMimeType(file) === "application/pdf";
-const isBrowserPreviewable = (file: StoredFile) => isImageFile(file) || isPdfFile(file) || fileMimeType(file).startsWith("text/") || fileMimeType(file) === "application/json" || fileMimeType(file).startsWith("audio/") || fileMimeType(file).startsWith("video/");
+const fileMimeType = (file: StoredFile) => file.metadata?.mimetype || file.mimetype || file.type || ({ pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", txt: "text/plain", csv: "text/csv", json: "application/json", mp3: "audio/mpeg", mp4: "video/mp4" }[file.name.split(".").pop()?.toLowerCase() || ""] || "application/octet-stream");
 
 function FilesSection({
   files,
@@ -611,76 +689,105 @@ function FilesSection({
   onUpload,
   onOpen,
   onDelete,
+  canDelete,
+  currentUserId,
 }: {
   files: StoredFile[];
   uploading: boolean;
   onUpload: (event: React.ChangeEvent<HTMLInputElement>) => void;
   onOpen: (file: StoredFile) => void;
   onDelete: (file: StoredFile) => void;
+  canDelete?: boolean;
+  currentUserId?: string;
 }) {
   return (
     <div>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-xs uppercase tracking-[.16em] text-zinc-600">Project files</p>
-          <h2 className="mt-2 text-2xl font-medium text-white">A shared shelf for the useful things</h2>
+          <p className="text-xs uppercase tracking-[.16em] text-zinc-600 font-medium">Shared Course Files</p>
+          <h2 className="mt-2 text-2xl font-medium text-white">Project Files Shelf</h2>
+          <p className="mt-1 text-xs text-zinc-400">
+            All course files and study PDFs are synced across accounts and protected against unauthorized copying.
+          </p>
         </div>
         <label className="button inline-flex cursor-pointer items-center gap-2 bg-violet-400 text-zinc-950 font-medium hover:bg-violet-300 transition shadow-md">
           <Upload size={16} />
-          {uploading ? "Uploading (5s fast)..." : "Upload file"}
+          {uploading ? "Uploading..." : "Upload file"}
           <input type="file" className="hidden" onChange={onUpload} disabled={uploading} />
         </label>
       </div>
 
       <div className="mt-5 space-y-2">
         {files.length ? (
-          files.map((file) => (
-            <div
-              key={file.id ?? file.path}
-              className="flex items-center gap-3 rounded-xl border border-white/[.07] bg-white/[.035] p-4 hover:border-white/15 transition"
-            >
-              <FileText size={20} className="text-cyan-300 shrink-0" />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm text-zinc-200 font-medium">{file.name}</p>
-                <p className="mt-1 text-xs text-zinc-500 flex flex-wrap items-center gap-1.5">
-                  <span>{fileMimeType(file)}</span>
-                  <span>·</span>
-                  <span>{formatBytes(file.metadata?.size || file.size)}</span>
-                  <span>·</span>
-                  <span>{file.created_at ? formatDate(file.created_at) : "Uploaded"}</span>
-                  {file.isLocalFallback && (
-                    <span className="px-1.5 py-0.2 rounded bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[10px] font-medium">
-                      Fast Fallback
-                    </span>
-                  )}
-                </p>
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                {isBrowserPreviewable(file) && (
+          files.map((file) => {
+            const isUserOwner = Boolean(canDelete || (file.uploader_id && file.uploader_id === currentUserId));
+
+            return (
+              <div
+                key={file.id ?? file.path}
+                className="group flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-white/[.07] bg-white/[.035] p-4 hover:border-white/15 transition shadow-sm"
+              >
+                <div
+                  className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer"
+                  onClick={() => onOpen(file)}
+                >
+                  <FileText size={22} className="text-cyan-300 shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm text-zinc-200 font-medium group-hover:text-cyan-200 transition">
+                      {file.name}
+                    </p>
+                    <p className="mt-1 text-xs text-zinc-500 flex flex-wrap items-center gap-1.5">
+                      <span>{fileMimeType(file)}</span>
+                      <span>·</span>
+                      <span>{formatBytes(file.metadata?.size || file.size)}</span>
+                      <span>·</span>
+                      <span>{file.created_at || file.uploaded_at ? formatDate(file.created_at || file.uploaded_at!) : "Uploaded"}</span>
+                      {file.uploader_name && (
+                        <>
+                          <span>·</span>
+                          <span className="text-zinc-400">By {file.uploader_name}</span>
+                        </>
+                      )}
+                      {file.isLocalFallback && (
+                        <span className="px-1.5 py-0.2 rounded bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[10px] font-medium">
+                          Local Backup
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
                   <button
                     type="button"
                     onClick={() => onOpen(file)}
-                    className="button px-3 py-1.5 text-xs font-medium cursor-pointer"
+                    className="button inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-cyan-400/30 bg-cyan-400/10 text-cyan-200 hover:bg-cyan-400/20 transition cursor-pointer"
+                    title="Open in protected study viewer"
                   >
-                    {isImageFile(file) || isPdfFile(file) ? "Preview" : "Open"}
+                    <Lock size={12} />
+                    <span>Protected View</span>
                   </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => onDelete(file)}
-                  className="p-1.5 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition cursor-pointer"
-                  title="Remove file"
-                  aria-label="Remove file"
-                >
-                  <Trash2 size={15} />
-                </button>
+
+                  {isUserOwner && (
+                    <button
+                      type="button"
+                      onClick={() => onDelete(file)}
+                      className="p-1.5 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition cursor-pointer"
+                      title="Delete file"
+                      aria-label="Delete file"
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-          ))
+            );
+          })
         ) : (
           <div className="rounded-2xl border border-dashed border-white/[.1] px-6 py-12 text-center">
             <FolderOpen className="mx-auto text-zinc-700" size={26} />
-            <p className="mt-3 text-sm text-zinc-500">No files uploaded to this project.</p>
+            <p className="mt-3 text-sm text-zinc-500">No files uploaded to this project yet.</p>
+            <p className="mt-1 text-xs text-zinc-600">Files uploaded by the instructor appear here for all enrolled students.</p>
           </div>
         )}
       </div>
@@ -727,7 +834,7 @@ function NotesSection({
     <div>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-xs uppercase tracking-[.16em] text-zinc-600">Project study materials</p>
+          <p className="text-xs uppercase tracking-[.16em] text-zinc-600 font-medium">Project study materials</p>
           <h2 className="mt-2 text-2xl font-medium text-white">Protected course notes & materials</h2>
         </div>
         <div className="flex items-center gap-2">
@@ -735,7 +842,7 @@ function NotesSection({
             type="button"
             onClick={onSync}
             disabled={syncing}
-            className="button inline-flex items-center gap-1.5 border border-cyan-400/30 bg-cyan-400/10 text-cyan-200 text-xs px-3 py-2 hover:bg-cyan-400/20 transition"
+            className="button inline-flex items-center gap-1.5 border border-cyan-400/30 bg-cyan-400/10 text-cyan-200 text-xs px-3 py-2 hover:bg-cyan-400/20 transition cursor-pointer"
             title="Refresh materials from server"
           >
             <RefreshCw size={13} className={syncing ? "animate-spin" : ""} />
@@ -744,7 +851,7 @@ function NotesSection({
           {canAdd && (
             <button
               onClick={() => setShowForm(!showForm)}
-              className="button inline-flex items-center gap-2 bg-violet-400 text-zinc-950"
+              className="button inline-flex items-center gap-2 bg-violet-400 text-zinc-950 cursor-pointer"
             >
               <Plus size={16} /> Add material
             </button>
@@ -769,10 +876,10 @@ function NotesSection({
             onChange={(event) => setContent(event.target.value)}
           />
           <div className="mt-4 flex gap-2">
-            <button disabled={saving} className="button bg-white text-zinc-950 disabled:opacity-50">
+            <button disabled={saving} className="button bg-white text-zinc-950 disabled:opacity-50 cursor-pointer">
               {saving ? "Saving..." : "Save material"}
             </button>
-            <button type="button" onClick={() => setShowForm(false)} className="button">
+            <button type="button" onClick={() => setShowForm(false)} className="button cursor-pointer">
               Cancel
             </button>
           </div>
@@ -792,7 +899,7 @@ function NotesSection({
                   <button
                     type="button"
                     onClick={() => onViewNote(note)}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-2 py-1 text-[11px] font-medium text-cyan-200 transition hover:bg-cyan-400/20"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-2 py-1 text-[11px] font-medium text-cyan-200 transition hover:bg-cyan-400/20 cursor-pointer"
                     title="Open protected viewer"
                   >
                     <Lock size={11} /> Protected View
@@ -801,7 +908,7 @@ function NotesSection({
                     <button
                       type="button"
                       onClick={() => onDeleteNote(note.id)}
-                      className="rounded-lg p-1 text-zinc-500 hover:bg-rose-500/15 hover:text-rose-400 transition"
+                      className="rounded-lg p-1 text-zinc-500 hover:bg-rose-500/15 hover:text-rose-400 transition cursor-pointer"
                       title="Delete study note"
                     >
                       <Trash2 size={13} />
