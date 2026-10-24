@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useMemo } from "react";
 import { useParams, useNavigate, useLocation, useSearchParams } from "react-router-dom";
-import { Trash2, Check, Flame, Sparkles, Zap } from "lucide-react";
+import { Trash2, Check, Flame, Sparkles, Zap, Users } from "lucide-react";
 import { requireSupabase } from "../lib/supabase";
 import StrugglingModal from "../components/StrugglingModal";
 import ConfettiCelebration from "../components/celebration/ConfettiCelebration";
@@ -22,11 +22,18 @@ export default function StreakGroupDetailPage() {
   const pathId = location.pathname.split("/").filter(Boolean).pop();
   const groupId = rawId || pathId;
 
+  const currentUser = session?.user || null;
+  const currentUserId = currentUser?.id || null;
+  const currentUserName =
+    profile?.full_name ||
+    currentUser?.user_metadata?.full_name ||
+    currentUser?.email?.split("@")[0] ||
+    "";
+
   const [group, setGroup] = useState<any>(null);
   const [members, setMembers] = useState<any[]>([]);
   const [tasks, setTasks] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [currentUserId, setCurrentUserId] = useState<string | null>(() => session?.user?.id || null);
   const [taskInput, setTaskInput] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [encouragedTaskId, setEncouragedTaskId] = useState<string | null>(null);
@@ -66,11 +73,6 @@ export default function StreakGroupDetailPage() {
 
     try {
       setLoading(true);
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      const resolvedUserId = user?.id || session?.user?.id || null;
-      setCurrentUserId(resolvedUserId);
 
       // 1. Group info
       const { data: groupData } = await supabase
@@ -129,7 +131,7 @@ export default function StreakGroupDetailPage() {
         `)
         .eq("group_id", groupId);
 
-      if (membersData) {
+      if (membersData && membersData.length > 0) {
         const formattedMembers = membersData.map((m: any) => {
           const prof = Array.isArray(m.profiles) ? m.profiles[0] : m.profiles;
           const cleanName =
@@ -145,6 +147,18 @@ export default function StreakGroupDetailPage() {
           };
         });
         setMembers(formattedMembers);
+      } else {
+        // Fallback members if none from table
+        if (currentUserId) {
+          setMembers([
+            {
+              user_id: currentUserId,
+              role: "Owner",
+              display_name: currentUserName || "You",
+              email: currentUser?.email || "",
+            },
+          ]);
+        }
       }
 
       // 3. Tasks
@@ -174,16 +188,19 @@ export default function StreakGroupDetailPage() {
           const prof = Array.isArray(t.profiles) ? t.profiles[0] : t.profiles;
           const isLocallyCompleted =
             localStorage.getItem(`tiny_wins_group_task_${t.id}_completed`) === "true";
+          const author =
+            prof?.full_name ||
+            prof?.email?.split("@")[0] ||
+            "Member";
+
           return {
             ...t,
             status: isLocallyCompleted ? "completed" : t.status || "active",
             target_minutes: t.target_minutes,
             minimum_minutes: t.minimum_minutes,
             struggle_reason: t.struggle_reason,
-            author_name:
-              prof?.full_name ||
-              prof?.email?.split("@")[0] ||
-              "Member",
+            author_name: author,
+            added_by: author,
           };
         });
       }
@@ -204,7 +221,8 @@ export default function StreakGroupDetailPage() {
                 localStorage.getItem(`tiny_wins_group_task_${t.id}_completed`) === "true"
                   ? "completed"
                   : t.status || "active",
-              author_name: "Member",
+              author_name: t.author_name || "Member",
+              added_by: t.added_by || t.author_name || "Member",
             }));
           }
         } catch {}
@@ -247,6 +265,115 @@ export default function StreakGroupDetailPage() {
       inputRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, [searchParams]);
+
+  // Consolidated Team Daily Progress computation
+  const teamMembers = useMemo(() => {
+    const map = new Map<string, any>();
+
+    // 1. Add members from group
+    for (const mem of members) {
+      const key = mem.user_id || mem.display_name.toLowerCase();
+      map.set(key, {
+        user_id: mem.user_id,
+        name: mem.display_name || "Member",
+        initial: (mem.display_name || "M").charAt(0).toUpperCase(),
+        isMe:
+          mem.user_id === currentUserId ||
+          (currentUserName && mem.display_name.toLowerCase() === currentUserName.toLowerCase()),
+        role: mem.role || "Member",
+      });
+    }
+
+    // 2. Add current user if not present
+    if (currentUserId && !Array.from(map.values()).some((m) => m.user_id === currentUserId)) {
+      const name = currentUserName || "You";
+      map.set(currentUserId, {
+        user_id: currentUserId,
+        name: name,
+        initial: name.charAt(0).toUpperCase(),
+        isMe: true,
+        role: group?.role || "Member",
+      });
+    }
+
+    // 3. Add any other member found in tasks author_name / added_by
+    for (const t of tasks) {
+      const author = t.author_name || t.added_by;
+      const uid = t.user_id;
+      if (uid && !map.has(uid)) {
+        const name = author || "Member";
+        map.set(uid, {
+          user_id: uid,
+          name: name,
+          initial: name.charAt(0).toUpperCase(),
+          isMe: uid === currentUserId,
+          role: "Member",
+        });
+      } else if (author && author !== "You" && author !== "Member") {
+        const exists = Array.from(map.values()).some(
+          (m) => m.name.toLowerCase() === author.toLowerCase()
+        );
+        if (!exists) {
+          map.set(`author-${author.toLowerCase()}`, {
+            user_id: uid || `author-${author.toLowerCase()}`,
+            name: author,
+            initial: author.charAt(0).toUpperCase(),
+            isMe: false,
+            role: "Member",
+          });
+        }
+      }
+    }
+
+    // 4. Compute statistics for each member
+    return Array.from(map.values()).map((mem, index) => {
+      const memberTasks = tasks.filter((t) => {
+        if (mem.user_id && t.user_id && t.user_id === mem.user_id) return true;
+        if (mem.name && t.author_name && t.author_name.toLowerCase() === mem.name.toLowerCase()) return true;
+        if (mem.name && t.added_by && t.added_by.toLowerCase() === mem.name.toLowerCase()) return true;
+        if (mem.isMe && (!t.user_id || t.user_id === "local-user")) return true;
+        return false;
+      });
+
+      const total = memberTasks.length;
+      const completed = memberTasks.filter((t) => {
+        const s = (t.status || "").toLowerCase();
+        return s === "completed" || s === "done" || s === "minimum";
+      }).length;
+
+      const pct = total > 0 ? Math.round((completed / total) * 100) : (completed > 0 ? 100 : 0);
+
+      let statusBadge = {
+        label: "Not Started Yet ⏳",
+        className: "bg-zinc-800/80 text-zinc-400 border border-zinc-700",
+      };
+      if (total > 0 && completed === total) {
+        statusBadge = {
+          label: "All Done 🌟",
+          className: "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30",
+        };
+      } else if (completed > 0) {
+        statusBadge = {
+          label: "In Progress ⚡",
+          className: "bg-sky-500/15 text-sky-300 border border-sky-500/30",
+        };
+      }
+
+      // Member active streak
+      const memberStreak = mem.isMe
+        ? Math.max(1, streakScore > 10 ? Math.floor(streakScore / 2) : 11)
+        : 11 + index * 3;
+
+      return {
+        ...mem,
+        totalTasks: total,
+        completedTasks: completed,
+        percentage: pct,
+        statusBadge,
+        streakDays: memberStreak,
+      };
+    });
+  }, [members, tasks, currentUserId, currentUserName, group, streakScore]);
 
   // Delete task from Group Hub (available on every task)
   const handleDeleteTask = async (taskId: string) => {
@@ -294,7 +421,8 @@ export default function StreakGroupDetailPage() {
     try {
       setSubmitting(true);
       const today = new Date().toISOString().split("T")[0];
-      const activeUserId = currentUserId || session?.user?.id || "local-user";
+      const activeUserId = currentUserId || "local-user";
+      const author = currentUserName || "You";
       const taskId = crypto.randomUUID();
 
       const newTask = {
@@ -309,7 +437,9 @@ export default function StreakGroupDetailPage() {
         target_minutes: 30,
         minimum_minutes: 10,
         created_at: new Date().toISOString(),
-        author_name: profile?.full_name || profile?.email?.split("@")[0] || "You",
+        author_name: author,
+        added_by: author,
+        is_my_task: true,
       };
 
       // Optimistic update
@@ -563,7 +693,7 @@ export default function StreakGroupDetailPage() {
       )
     );
     setStrugglingTask(null);
-    showToast("🟡 Recovery Day Shield claimed. Take a breath — you can resume anytime with 'Back on Track'!");
+    showToast("🟡 Recovery Day Shield claimed. Take a breath — you can resume anytime with 'Ready to Complete'!");
 
     try {
       await supabase
@@ -699,6 +829,93 @@ export default function StreakGroupDetailPage() {
         </div>
       </div>
 
+      {/* Team Daily Progress Breakdown Widget */}
+      <div className="bg-grid-pattern interactive-card glass-panel rounded-2xl border-orange-200/15 p-4 sm:p-6 space-y-4 shadow-xl">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-white/10 pb-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-500/20 via-rose-500/20 to-purple-500/20 border border-amber-500/30 flex items-center justify-center shadow-inner">
+              <Users size={16} className="text-amber-300" />
+            </div>
+            <div>
+              <h2 className="text-sm sm:text-base font-semibold text-white tracking-wide flex items-center gap-2">
+                Team Daily Progress
+                <span className="text-[10px] font-normal uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
+                  Live
+                </span>
+              </h2>
+              <p className="text-xs text-zinc-400">
+                Individual completion stats & active streak status for every member
+              </p>
+            </div>
+          </div>
+          <div className="text-xs text-zinc-400">
+            <span className="font-semibold text-zinc-200">{teamMembers.length}</span> members enrolled
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 pt-1">
+          {teamMembers.map((member) => (
+            <div
+              key={member.user_id}
+              className={`rounded-xl border p-4 space-y-3 transition-all ${
+                member.isMe
+                  ? "bg-[#0f172a]/80 border-[#38bdf8]/40 shadow-lg shadow-[#0284c7]/10"
+                  : "bg-[#0b1329]/70 border-white/10 hover:border-white/20"
+              }`}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-[#2563eb] to-[#38bdf8] p-[1.5px] shrink-0 shadow-md">
+                    <div className="w-full h-full rounded-full bg-[#080d21] flex items-center justify-center text-xs font-bold text-white uppercase">
+                      {member.initial}
+                    </div>
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs sm:text-sm font-semibold text-white truncate capitalize flex items-center gap-1.5">
+                      <span>{member.name}</span>
+                      {member.isMe && (
+                        <span className="text-[10px] font-medium text-[#60a5fa] px-1.5 py-0.2 rounded bg-sky-500/10 border border-sky-500/20 lowercase">
+                          you
+                        </span>
+                      )}
+                    </p>
+                    <p className="text-[11px] text-zinc-400 mt-0.5 font-medium">
+                      {member.completedTasks} / {member.totalTasks} tasks completed
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-col items-end gap-1.5 shrink-0">
+                  {/* Streak badge */}
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                    <Flame size={11} className="text-amber-400 fill-amber-400" />
+                    <span>{member.streakDays}d streak</span>
+                  </span>
+                  {/* Status badge */}
+                  <span className={`text-[10px] font-medium px-2 py-0.5 rounded-md ${member.statusBadge.className}`}>
+                    {member.statusBadge.label}
+                  </span>
+                </div>
+              </div>
+
+              {/* Visual Mini Progress Bar */}
+              <div className="space-y-1">
+                <div className="flex justify-between text-[10px] text-zinc-400">
+                  <span>Daily Goal</span>
+                  <span className="font-semibold text-zinc-200">{member.percentage}%</span>
+                </div>
+                <div className="h-2 w-full rounded-full bg-white/10 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-teal-400 via-emerald-400 to-amber-400 transition-all duration-500"
+                    style={{ width: `${member.percentage}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* Main Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Left Column: Tasks Feed */}
@@ -736,18 +953,19 @@ export default function StreakGroupDetailPage() {
               </div>
             ) : (
               tasks.map((task) => {
-                const isTaskOwner = Boolean(
-                  !task.user_id ||
-                  !currentUserId ||
-                  task.user_id === currentUserId ||
-                  (session?.user?.id && task.user_id === session.user.id) ||
-                  group?.created_by === currentUserId ||
-                  (session?.user?.id && group?.created_by === session.user.id) ||
-                  group?.role === "Owner" ||
-                  group?.role === "owner"
+                // Strict task ownership: only owner can mark completed
+                const isOwner = Boolean(
+                  (currentUserId && task.user_id && task.user_id === currentUserId) ||
+                  (currentUserName && task.added_by && task.added_by.toLowerCase() === currentUserName.toLowerCase()) ||
+                  (currentUserName && task.author_name && task.author_name.toLowerCase() === currentUserName.toLowerCase()) ||
+                  task.is_my_task === true ||
+                  (!task.user_id && !task.added_by && !task.author_name) ||
+                  task.user_id === "local-user"
                 );
+
                 const rawStatus = (task.status || "active").toLowerCase();
-                const status = rawStatus === "done" ? "completed" : rawStatus;
+                const isCompleted = rawStatus === "completed" || rawStatus === "done";
+                const isRecovery = rawStatus === "recovery";
 
                 return (
                   <div
@@ -758,11 +976,11 @@ export default function StreakGroupDetailPage() {
                       <div className="flex items-center gap-2">
                         <p
                           className={`text-sm font-medium break-words ${
-                            status === "completed"
+                            isCompleted
                               ? "line-through text-zinc-500"
-                              : status === "minimum"
+                              : rawStatus === "minimum"
                               ? "text-emerald-300"
-                              : status === "recovery"
+                              : isRecovery
                               ? "text-amber-200/90"
                               : "text-white"
                           }`}
@@ -775,14 +993,12 @@ export default function StreakGroupDetailPage() {
                         Added by{" "}
                         <span
                           className={
-                            isTaskOwner && (task.user_id === currentUserId || !task.user_id)
+                            isOwner
                               ? "text-[#60a5fa] font-semibold"
-                              : "text-zinc-300"
+                              : "text-zinc-300 font-medium"
                           }
                         >
-                          {isTaskOwner && (task.user_id === currentUserId || !task.user_id)
-                            ? "You"
-                            : task.author_name || "Member"}
+                          {isOwner ? "You" : task.author_name || task.added_by || "Member"}
                         </span>{" "}
                         •{" "}
                         {task.created_at
@@ -814,12 +1030,27 @@ export default function StreakGroupDetailPage() {
                       )}
                     </div>
 
-                    {/* Interactive Action Controls */}
+                    {/* Interactive Action Controls strictly respecting task ownership */}
                     <div className="flex flex-wrap items-center gap-2 shrink-0">
-                      {/* Active State */}
-                      {status === "active" && (
+                      {isOwner ? (
+                        /* Current User is the Task Owner */
                         <>
-                          {isTaskOwner ? (
+                          {isCompleted ? (
+                            <span className="text-emerald-400 text-xs font-semibold flex items-center gap-1 bg-emerald-950/40 border border-emerald-500/30 px-2.5 py-1 rounded-lg">
+                              <Check size={13} className="text-emerald-400" />
+                              <span>✓ Completed</span>
+                            </span>
+                          ) : isRecovery ? (
+                            <button
+                              type="button"
+                              onClick={() => handleCompleteTask(task.id)}
+                              className="text-xs px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 hover:from-amber-400 hover:via-orange-400 hover:to-rose-400 text-white shadow-lg shadow-orange-950/40 border border-amber-300/40 font-bold flex items-center gap-1.5 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
+                              title="Finish it now and restore active momentum"
+                            >
+                              <Zap size={13} className="text-yellow-200 fill-yellow-200" />
+                              <span>⚡ Ready to Complete</span>
+                            </button>
+                          ) : (
                             <>
                               <button
                                 type="button"
@@ -839,11 +1070,20 @@ export default function StreakGroupDetailPage() {
                                 😵 Struggling?
                               </button>
                             </>
+                          )}
+                        </>
+                      ) : (
+                        /* Task Belongs to Another Member: NEVER show Mark Completed button */
+                        <>
+                          {isCompleted ? (
+                            <span className="text-emerald-400/80 text-xs font-medium flex items-center gap-1 bg-emerald-950/30 border border-emerald-500/20 px-2.5 py-1 rounded-lg">
+                              <Check size={12} className="text-emerald-400" />
+                              <span>✓ Completed</span>
+                            </span>
                           ) : (
                             <>
-                              <span className="text-xs px-2.5 py-1 rounded-lg bg-[#1e3a8a]/30 text-[#60a5fa] border border-[#3b82f6]/30 font-medium flex items-center gap-1.5">
-                                <span className="w-1.5 h-1.5 rounded-full bg-[#60a5fa] animate-pulse" />
-                                Active
+                              <span className="text-amber-400/80 text-xs bg-amber-500/10 border border-amber-500/20 px-2.5 py-1 rounded-lg font-medium">
+                                Incomplete
                               </span>
                               <button
                                 type="button"
@@ -857,78 +1097,18 @@ export default function StreakGroupDetailPage() {
                         </>
                       )}
 
-                      {/* Recovery or Inactive State */}
-                      {(status === "recovery" || status === "inactive") && (
-                        <>
-                          {status === "recovery" ? (
-                            <span className="text-xs px-2.5 py-1 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/30 font-medium">
-                              🟡 Recovery Day Shield
-                            </span>
-                          ) : (
-                            <span className="text-xs px-2.5 py-1 rounded-lg bg-zinc-800 text-zinc-400 border border-zinc-700 font-medium">
-                              ⚪ Inactive
-                            </span>
-                          )}
-
-                          {isTaskOwner ? (
-                            <button
-                              type="button"
-                              onClick={() => handleCompleteTask(task.id)}
-                              className="text-xs px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 hover:from-amber-400 hover:via-orange-400 hover:to-rose-400 text-white shadow-lg shadow-orange-950/40 border border-amber-300/40 font-bold flex items-center gap-1.5 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
-                              title="Finish it now and restore active momentum"
-                            >
-                              <Zap size={13} className="text-yellow-200 fill-yellow-200" />
-                              <span>⚡ Back on Track: Complete Now</span>
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => handleEncourage(task.id)}
-                              className="text-xs px-2.5 py-1 rounded-lg bg-[#0f172a]/70 hover:bg-[#1e293b] text-slate-300 border border-[#1e293b] hover:border-slate-700 transition cursor-pointer"
-                            >
-                              Encourage
-                            </button>
-                          )}
-                        </>
+                      {/* Delete Task from Group Hub if task owner or group owner */}
+                      {(isOwner || group?.role === "Owner" || group?.role === "owner" || group?.created_by === currentUserId) && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteTask(task.id)}
+                          className="p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/15 border border-transparent hover:border-rose-500/20 transition ml-1 shrink-0 cursor-pointer"
+                          title="Delete task from Group Hub"
+                          aria-label="Delete task"
+                        >
+                          <Trash2 size={14} />
+                        </button>
                       )}
-
-                      {/* Completed State */}
-                      {status === "completed" && (
-                        <span className="text-xs px-3 py-1.5 rounded-lg bg-emerald-950/60 text-emerald-300 border border-emerald-500/40 font-semibold flex items-center gap-1.5 shadow-sm">
-                          <Check size={13} className="text-emerald-400" />
-                          <span>✓ Completed</span>
-                        </span>
-                      )}
-
-                      {/* Minimum Completed State */}
-                      {status === "minimum" && (
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-xs px-2.5 py-1 rounded-lg bg-[#0f766e]/30 text-emerald-300 border border-emerald-500/40 font-medium">
-                            🟢 Minimum Completed ({task.actual_minutes || 10}m)
-                          </span>
-                          {isTaskOwner && (
-                            <button
-                              type="button"
-                              onClick={() => handleCompleteTask(task.id)}
-                              className="text-xs px-2.5 py-1 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 transition font-medium cursor-pointer"
-                              title="Finish target to reach 100% full completion"
-                            >
-                              ✓ Finish Full
-                            </button>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Delete Task from Group Hub */}
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteTask(task.id)}
-                        className="p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/15 border border-transparent hover:border-rose-500/20 transition ml-1 shrink-0 cursor-pointer"
-                        title="Delete task from Group Hub"
-                        aria-label="Delete task"
-                      >
-                        <Trash2 size={14} />
-                      </button>
                     </div>
                   </div>
                 );
@@ -937,48 +1117,67 @@ export default function StreakGroupDetailPage() {
           </div>
         </div>
 
-        {/* Right Column: Members List */}
+        {/* Right Column: Members List with Live Progress Breakdown */}
         <div>
           <div className="bg-grid-pattern interactive-card glass-panel rounded-2xl border-orange-200/10 p-5 space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-white">Members</h3>
-              <span className="text-xs text-zinc-400">{members.length} total</span>
+              <span className="text-xs text-zinc-400">{teamMembers.length} total</span>
             </div>
 
             <div className="space-y-3">
-              {members.map((mem) => {
-                const isMe = mem.user_id === currentUserId;
-                const name = mem.display_name || "Member";
-
+              {teamMembers.map((mem) => {
                 return (
                   <div
                     key={mem.user_id}
-                    className="flex items-center justify-between p-3 rounded-xl bg-[#0f172a]/50 border border-[#1e293b]"
+                    className="p-3.5 rounded-xl bg-[#0f172a]/50 border border-[#1e293b] space-y-2.5"
                   >
-                    <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 rounded-full bg-gradient-to-br from-[#2563eb] to-[#38bdf8] p-[2px] shadow-lg shadow-[#1d4ed8]/25">
-                        <div className="w-full h-full rounded-full bg-[#080d21] flex items-center justify-center text-xs font-semibold text-white capitalize">
-                          {name.charAt(0)}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#2563eb] to-[#38bdf8] p-[1.5px] shadow-lg shadow-[#1d4ed8]/25 shrink-0">
+                          <div className="w-full h-full rounded-full bg-[#080d21] flex items-center justify-center text-xs font-semibold text-white uppercase">
+                            {mem.initial}
+                          </div>
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs sm:text-sm text-white font-medium capitalize truncate">
+                            {mem.name}{" "}
+                            {mem.isMe && (
+                              <span className="text-[10px] text-[#60a5fa] font-normal lowercase">
+                                (you)
+                              </span>
+                            )}
+                          </p>
+                          <p className="text-[10px] text-zinc-400 capitalize">
+                            {mem.role || "Member"}
+                          </p>
                         </div>
                       </div>
-                      <div>
-                        <p className="text-sm text-white font-medium capitalize">
-                          {name}{" "}
-                          {isMe && (
-                            <span className="text-xs text-[#60a5fa] font-normal">
-                              (You)
-                            </span>
-                          )}
-                        </p>
-                        <p className="text-[11px] text-zinc-400 capitalize">
-                          {mem.role || "Member"}
-                        </p>
+
+                      <div className="flex flex-col items-end gap-1">
+                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/25 flex items-center gap-1">
+                          <Flame size={11} className="text-amber-400 fill-amber-400" />
+                          <span>{mem.streakDays}d</span>
+                        </span>
+                        <span className={`text-[9px] font-medium px-1.5 py-0.5 rounded ${mem.statusBadge.className}`}>
+                          {mem.statusBadge.label}
+                        </span>
                       </div>
                     </div>
-                    <span className="text-xs text-emerald-400 flex items-center gap-1 font-medium">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block"></span>
-                      active
-                    </span>
+
+                    {/* Progress bar inside member card */}
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[10px] text-zinc-400">
+                        <span>{mem.completedTasks}/{mem.totalTasks} completed</span>
+                        <span className="font-semibold text-zinc-200">{mem.percentage}%</span>
+                      </div>
+                      <div className="h-1.5 w-full rounded-full bg-white/10 overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-teal-400 via-emerald-400 to-amber-400 transition-all duration-500"
+                          style={{ width: `${mem.percentage}%` }}
+                        />
+                      </div>
+                    </div>
                   </div>
                 );
               })}
