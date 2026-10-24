@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { requireSupabase } from "../lib/supabase";
 import ProtectedFileViewerModal from "../components/projects/ProtectedFileViewerModal";
-import { deleteProjectFile } from "../lib/projectFiles";
+import { deleteProjectFile, getFromIndexedDB } from "../lib/projectFiles";
 
 type Project = {
 	id: string;
@@ -99,6 +99,26 @@ export default function ProjectsPage() {
 		} catch (e) {
 			console.warn("Delete file error:", e);
 		}
+	};
+
+	const handleOpenCardFile = async (project: Project, f: any) => {
+		let fileUrl = f.url || f.data_url;
+		if (!fileUrl) {
+			try {
+				const idbFiles: any[] = (await getFromIndexedDB(`tiny_wins_project_files_${project.id}`)) || [];
+				const match = idbFiles.find((item: any) => item.name === f.name || item.id === f.id);
+				if (match?.url || match?.data_url) fileUrl = match.url || match.data_url;
+			} catch {}
+		}
+		setPreviewFile({
+			name: f.name,
+			url: fileUrl || "",
+			type: f.type || f.mimetype,
+			size: f.size ?? f.metadata?.size,
+			projectId: project.id,
+			path: f.path,
+			id: f.id,
+		});
 	};
 
 	const currentUser = session?.user
@@ -592,17 +612,7 @@ export default function ProjectsPage() {
 												<button
 													key={idx}
 													type="button"
-													onClick={() =>
-														setPreviewFile({
-															name: f.name,
-															url: f.url,
-															type: f.type || f.mimetype,
-															size: f.size ?? f.metadata?.size,
-															projectId: project.id,
-															path: f.path,
-															id: f.id,
-														})
-													}
+													onClick={() => void handleOpenCardFile(project, f)}
 													className="inline-flex items-center gap-1 rounded-md bg-white/[.04] hover:bg-violet-500/20 px-2 py-0.5 text-[11px] text-zinc-300 hover:text-violet-200 border border-white/[.06] transition cursor-pointer max-w-[140px]"
 													title={`Protected study preview: ${f.name}`}
 												>

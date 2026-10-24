@@ -10,6 +10,7 @@ import {
   uploadProjectFile,
   fetchProjectFiles,
   deleteProjectFile,
+  getFromIndexedDB,
   type StoredProjectFile as StoredFile,
 } from "../lib/projectFiles";
 
@@ -344,7 +345,7 @@ export default function ProjectDetailPage() {
     setError("");
 
     try {
-      const uploaderName = profile?.full_name || session?.user?.email?.split("@")[0] || "Teacher";
+      const uploaderName = profile?.full_name || session?.user?.email?.split("@")[0] || "Instructor";
       const { file: storedFile, message } = await uploadProjectFile(
         projectId,
         session.user.id,
@@ -352,14 +353,18 @@ export default function ProjectDetailPage() {
         uploaderName
       );
 
-      setFiles((prev) => [storedFile, ...prev.filter((f) => f.name !== storedFile.name && f.id !== storedFile.id)]);
-      setNotice(message);
+      // Immediate UI Feedback: Append new file to active files state array immediately
+      setFiles((prev) => [
+        storedFile,
+        ...prev.filter((f) => f.name !== storedFile.name && f.id !== storedFile.id),
+      ]);
+      setNotice(message || "✅ File uploaded and secured!");
       window.setTimeout(() => setNotice(""), 4000);
-      void loadFiles(projectId, members.map((m) => m.user_id));
     } catch (err: any) {
       console.error("File upload failed:", err);
       setError(`Unable to upload file: ${err?.message || err?.error_description || "Storage error"}`);
     } finally {
+      // In the finally block, ALWAYS reset uploading = false so the button never stays stuck on "Uploading..."
       setUploading(false);
       event.target.value = "";
     }
@@ -369,6 +374,17 @@ export default function ProjectDetailPage() {
     if (!projectId) return;
 
     let targetUrl = (file as any).data_url || file.metadata?.data_url || file.url || file.metadata?.url;
+
+    if (!targetUrl) {
+      try {
+        const idbFiles: StoredFile[] = (await getFromIndexedDB(`tiny_wins_project_files_${projectId}`)) || [];
+        const match = idbFiles.find((f) => f.name === file.name || f.id === file.id);
+        if (match?.url || match?.data_url) {
+          targetUrl = match.url || match.data_url;
+        }
+      } catch {}
+    }
+
     if (!targetUrl && file.path) {
       try {
         const { data: pubData } = requireSupabase().storage.from("project-files").getPublicUrl(file.path);
@@ -381,30 +397,7 @@ export default function ProjectDetailPage() {
       return;
     }
 
-    try {
-      const { data, error: downloadError } = await requireSupabase()
-        .storage.from("project-files")
-        .createSignedUrl(file.path, 3600);
-
-      if (data?.signedUrl) {
-        setPreview({ file, url: data.signedUrl });
-      } else {
-        const { data: pubData } = requireSupabase().storage.from("project-files").getPublicUrl(file.path);
-        if (pubData?.publicUrl) {
-          setPreview({ file, url: pubData.publicUrl });
-        } else {
-          // If no URL available, still set preview so modal shows the informative 0-byte/expired warning
-          setPreview({ file, url: "" });
-        }
-      }
-    } catch (err: any) {
-      const { data: pubData } = requireSupabase().storage.from("project-files").getPublicUrl(file.path);
-      if (pubData?.publicUrl) {
-        setPreview({ file, url: pubData.publicUrl });
-      } else {
-        setPreview({ file, url: "" });
-      }
-    }
+    setPreview({ file, url: "" });
   };
 
   const deleteFile = async (file: StoredFile) => {
