@@ -360,8 +360,17 @@ export default function ProjectDetailPage() {
 
   const openFile = async (file: StoredFile) => {
     if (!projectId) return;
-    if (file.url) {
-      setPreview({ file, url: file.url });
+
+    let targetUrl = file.url;
+    if (!targetUrl && file.path) {
+      try {
+        const { data: pubData } = requireSupabase().storage.from("project-files").getPublicUrl(file.path);
+        if (pubData?.publicUrl) targetUrl = pubData.publicUrl;
+      } catch {}
+    }
+
+    if (targetUrl) {
+      setPreview({ file, url: targetUrl });
       return;
     }
 
@@ -381,7 +390,12 @@ export default function ProjectDetailPage() {
         }
       }
     } catch (err: any) {
-      setError(`Unable to preview file: ${err?.message || "Storage error"}`);
+      const { data: pubData } = requireSupabase().storage.from("project-files").getPublicUrl(file.path);
+      if (pubData?.publicUrl) {
+        setPreview({ file, url: pubData.publicUrl });
+      } else {
+        setError(`Unable to preview file: ${err?.message || "Storage error"}`);
+      }
     }
   };
 
@@ -681,7 +695,28 @@ function ActivitySection({ activity }: { activity: { date: string; text: string 
 
 function TaskSection({ tasks, categories, currentUserId, showForm, setShowForm, onSubmit, saving, title, setTitle, description, setDescription, category, setCategory, priority, setPriority, dueDate, setDueDate, dueTime, setDueTime, onToggle, onDelete }: { tasks: ReturnType<typeof useTasks>["tasks"]; categories: { id: string; name: string }[]; currentUserId?: string; showForm: boolean; setShowForm: (value: boolean) => void; onSubmit: (event: React.FormEvent) => void; saving: boolean; title: string; setTitle: (value: string) => void; description: string; setDescription: (value: string) => void; category: string; setCategory: (value: string) => void; priority: Priority; setPriority: (value: Priority) => void; dueDate: string; setDueDate: (value: string) => void; dueTime: string; setDueTime: (value: string) => void; onToggle: (task: ReturnType<typeof useTasks>["tasks"][number]) => void; onDelete: (task: ReturnType<typeof useTasks>["tasks"][number]) => void }) { return <div><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs uppercase tracking-[.16em] text-zinc-600">Project tasks</p><h2 className="mt-2 text-2xl font-medium text-white">Move the work forward</h2></div><button onClick={() => setShowForm(!showForm)} className="button inline-flex items-center gap-2 bg-violet-400 text-zinc-950 cursor-pointer"><Plus size={16} /> Add task</button></div>{showForm && <form onSubmit={onSubmit} className="mt-5 rounded-2xl border border-violet-300/20 bg-violet-300/[.06] p-5"><div className="grid gap-3 md:grid-cols-2"><input className="field md:col-span-2" required placeholder="Task title" value={title} onChange={event => setTitle(event.target.value)} /><textarea className="field min-h-20 md:col-span-2" placeholder="Description" value={description} onChange={event => setDescription(event.target.value)} /><select className="field" value={category} onChange={event => setCategory(event.target.value)}>{categories.map(option => <option key={option.id} value={option.name}>{option.name}</option>)}</select><select className="field" value={priority} onChange={event => setPriority(event.target.value as Priority)}><option>High</option><option>Medium</option><option>Low</option></select><input className="field" type="date" value={dueDate} onChange={event => setDueDate(event.target.value)} /><input className="field" type="time" value={dueTime} onChange={event => setDueTime(event.target.value)} /></div><div className="mt-4 flex gap-2"><button disabled={saving} className="button bg-white text-zinc-950 disabled:opacity-50 cursor-pointer">{saving ? "Adding..." : "Add task"}</button><button type="button" onClick={() => setShowForm(false)} className="button cursor-pointer">Cancel</button></div></form>}<div className="mt-5 space-y-2">{tasks.length ? tasks.map(task => <div key={task.id} className={`flex items-center gap-3 rounded-xl border border-white/[.07] bg-white/[.035] p-4 ${task.completed ? "opacity-60" : ""}`}><button onClick={() => onToggle(task)} className={`grid h-6 w-6 shrink-0 place-items-center rounded-full border ${task.completed ? "border-white bg-white text-black" : "border-zinc-700 text-transparent hover:border-zinc-300"} cursor-pointer`} aria-label={`Mark ${task.title} ${task.completed ? "incomplete" : "complete"}`}><Check size={13} /></button><div className="min-w-0 flex-1"><p className={`text-sm font-medium ${task.completed ? "text-zinc-500 line-through" : "text-zinc-200"}`}>{task.title}</p><p className="mt-1 text-xs text-zinc-600">{task.category}{task.dueDate ? ` · Due ${task.dueDate}` : ""}</p></div><span className="hidden text-xs text-zinc-500 sm:block">{task.priority}</span>{task.ownerId === currentUserId && <button onClick={() => onDelete(task)} className="text-xs text-zinc-600 hover:text-red-300 cursor-pointer">Delete</button>}</div>) : <div className="rounded-2xl border border-dashed border-white/[.1] px-6 py-12 text-center"><Check className="mx-auto text-zinc-700" size={24} /><p className="mt-3 text-sm text-zinc-500">No tasks in this project yet.</p></div>}</div></div>; }
 
-const fileMimeType = (file: StoredFile) => file.metadata?.mimetype || file.mimetype || file.type || ({ pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", txt: "text/plain", csv: "text/csv", json: "application/json", mp3: "audio/mpeg", mp4: "video/mp4" }[file.name.split(".").pop()?.toLowerCase() || ""] || "application/octet-stream");
+const fileMimeType = (file: StoredFile) =>
+  file.metadata?.mimetype ||
+  file.mimetype ||
+  file.type ||
+  ({
+    pdf: "application/pdf",
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    svg: "image/svg+xml",
+    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ppt: "application/vnd.ms-powerpoint",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    doc: "application/msword",
+    txt: "text/plain",
+    csv: "text/csv",
+    json: "application/json",
+    mp3: "audio/mpeg",
+    mp4: "video/mp4",
+  }[file.name.split(".").pop()?.toLowerCase() || ""] || "application/octet-stream");
 
 function FilesSection({
   files,

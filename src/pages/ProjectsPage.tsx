@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { ArrowUpRight, Check, Copy, FolderKanban, LogOut, Plus, Trash2, Users } from "lucide-react";
+import { ArrowUpRight, Check, Copy, FileText, FolderKanban, LogOut, Plus, Trash2, Users } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { requireSupabase } from "../lib/supabase";
+import ProtectedFileViewerModal from "../components/projects/ProtectedFileViewerModal";
 
 type Project = {
 	id: string;
@@ -66,6 +67,7 @@ export default function ProjectsPage() {
 	const [loading, setLoading] = useState(true);
 	const [saving, setSaving] = useState(false);
 	const [copiedId, setCopiedId] = useState<string | null>(null);
+	const [previewFile, setPreviewFile] = useState<{ name: string; url?: string; type?: string } | null>(null);
 
 	const currentUser = session?.user
 		? {
@@ -552,6 +554,27 @@ export default function ProjectsPage() {
 									<p className="mt-2 min-h-10 text-sm leading-6 text-zinc-400">
 										{project.description || "No description yet."}
 									</p>
+									{Array.isArray(project.files) && project.files.length > 0 && (
+										<div className="mt-3 flex flex-wrap items-center gap-1.5">
+											{project.files.slice(0, 2).map((f: any, idx: number) => (
+												<button
+													key={idx}
+													type="button"
+													onClick={() => setPreviewFile({ name: f.name, url: f.url, type: f.type || f.mimetype })}
+													className="inline-flex items-center gap-1 rounded-md bg-white/[.04] hover:bg-violet-500/20 px-2 py-0.5 text-[11px] text-zinc-300 hover:text-violet-200 border border-white/[.06] transition cursor-pointer max-w-[140px]"
+													title={`Protected study preview: ${f.name}`}
+												>
+													<FileText size={11} className="text-cyan-300 shrink-0" />
+													<span className="truncate">{f.name}</span>
+												</button>
+											))}
+											{project.files.length > 2 && (
+												<span className="text-[10px] text-zinc-500 font-medium">
+													+{project.files.length - 2} more
+												</span>
+											)}
+										</div>
+									)}
 								</div>
 
 								<div className="mt-5 border-t border-white/[.06] pt-4">
@@ -614,6 +637,16 @@ export default function ProjectsPage() {
 						);
 					})}
 				</div>
+			)}
+
+			{previewFile && (
+				<ProtectedFileViewerModal
+					title={previewFile.name}
+					type="file"
+					fileUrl={previewFile.url}
+					fileMimeType={previewFile.type}
+					onClose={() => setPreviewFile(null)}
+				/>
 			)}
 		</section>
 	);

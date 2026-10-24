@@ -17,6 +17,7 @@ export interface StoredProjectFile {
     size?: number;
     mimetype?: string;
     uploader_name?: string;
+    url?: string;
   };
 }
 
@@ -114,14 +115,16 @@ export async function uploadProjectFile(
 
   const dataUrl = await fileDataUrlPromise;
 
-  // Obtain public or signed URL if possible
+  // Obtain valid public Supabase storage URL immediately so joined students and creators get working preview
   let remoteUrl = "";
-  if (uploadSuccess) {
-    try {
-      const { data: pubData } = supabase.storage.from("project-files").getPublicUrl(storagePath);
-      if (pubData?.publicUrl) remoteUrl = pubData.publicUrl;
-    } catch {}
+  try {
+    const { data: pubData } = supabase.storage.from("project-files").getPublicUrl(storagePath);
+    if (pubData?.publicUrl) remoteUrl = pubData.publicUrl;
+  } catch (err) {
+    console.warn("Could not generate publicUrl:", err);
   }
+
+  const primaryUrl = remoteUrl || dataUrl || (typeof window !== "undefined" ? URL.createObjectURL(file) : "");
 
   const fileMetadata: StoredProjectFile = {
     id: `file-${timestamp}-${cleanName}`,
@@ -130,7 +133,7 @@ export async function uploadProjectFile(
     size: file.size,
     mimetype: file.type || "application/octet-stream",
     type: file.type || "application/octet-stream",
-    url: remoteUrl || dataUrl || (typeof window !== "undefined" ? URL.createObjectURL(file) : ""),
+    url: primaryUrl,
     created_at: new Date().toISOString(),
     uploaded_at: new Date().toISOString(),
     uploader_name: uploaderName || "Teacher",
@@ -140,6 +143,7 @@ export async function uploadProjectFile(
       size: file.size,
       mimetype: file.type || "application/octet-stream",
       uploader_name: uploaderName || "Teacher",
+      url: primaryUrl,
     },
   };
 
@@ -217,6 +221,7 @@ export async function uploadProjectFile(
  * 2. Checks project_files table
  * 3. Checks Supabase storage listing
  * 4. Merges and deduplicates with localStorage
+ * 5. Guarantees valid public URL for all items
  */
 export async function fetchProjectFiles(
   projectId: string,
@@ -346,7 +351,18 @@ export async function fetchProjectFiles(
     }
   });
 
-  const merged = Array.from(fileMap.values());
+  // 5. Ensure valid public URLs for all files
+  const merged = Array.from(fileMap.values()).map((file) => {
+    if ((!file.url || file.url.trim() === "") && file.path) {
+      try {
+        const { data: pubData } = supabase.storage.from("project-files").getPublicUrl(file.path);
+        if (pubData?.publicUrl) {
+          return { ...file, url: pubData.publicUrl };
+        }
+      } catch {}
+    }
+    return file;
+  });
 
   // Cache locally
   try {
