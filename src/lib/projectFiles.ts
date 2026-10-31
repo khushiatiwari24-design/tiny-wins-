@@ -4,7 +4,7 @@ export interface StoredProjectFile {
   id: string | null;
   name: string;
   path: string;
-  size?: number;
+  size?: number | string;
   mimetype?: string;
   type?: string;
   created_at?: string;
@@ -15,7 +15,7 @@ export interface StoredProjectFile {
   data_url?: string;
   isLocalFallback?: boolean;
   metadata?: {
-    size?: number;
+    size?: number | string;
     mimetype?: string;
     uploader_name?: string;
     url?: string;

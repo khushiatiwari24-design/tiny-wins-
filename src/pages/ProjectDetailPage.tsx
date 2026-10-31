@@ -33,7 +33,39 @@ type Note = { id: string; title: string; content: string; author_id: string; cre
 type Tab = "Overview" | "Tasks" | "Files" | "Notes" | "Members" | "Activity";
 
 const formatDate = (value: string) => new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-const formatBytes = (bytes = 0) => bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+const formatBytes = (bytes: any = 0) => {
+  if (typeof bytes === "string") return bytes;
+  const num = Number(bytes) || 0;
+  return num < 1024 ? `${num} B` : num < 1024 * 1024 ? `${Math.round(num / 1024)} KB` : `${(num / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+function dataURLtoBlob(dataurl: string): Blob | null {
+  try {
+    const parts = dataurl.split(",");
+    if (parts.length < 2) return null;
+    const mimeMatch = parts[0].match(/:(.*?);/);
+    const mime = mimeMatch ? mimeMatch[1] : "application/pdf";
+    const binaryString = atob(parts[1]);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    return new Blob([bytes], { type: mime });
+  } catch (err) {
+    console.error("Failed to convert base64 to blob:", err);
+    return null;
+  }
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve((reader.result as string) || "");
+    reader.onerror = () => resolve("");
+    reader.readAsDataURL(file);
+  });
+}
 
 export default function ProjectDetailPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -72,6 +104,7 @@ export default function ProjectDetailPage() {
     ? {
         id: session.user.id,
         email: session.user.email,
+        name: profile?.full_name || session.user.email?.split("@")[0] || "Instructor",
         role: profile?.role || "student",
       }
     : null;
@@ -189,24 +222,88 @@ export default function ProjectDetailPage() {
 
     setLoading(false);
 
-    // Load files across Supabase projects table JSONB, storage bucket, and local fallback
+    // Load files across Supabase project_shared_materials, storage bucket, and local fallback
     try {
-      const allMemberIds = [projectData.owner_id, ...membersData.map((m) => m.user_id)];
-      await loadFiles(projectId, allMemberIds);
+      await loadFiles(projectId, projectData);
     } catch {}
   };
 
   const syncMaterials = async () => {
     setSyncing(true);
+    const supabase = requireSupabase();
+    const sharedKey = (project?.join_code || "TINY-2004").trim().toUpperCase();
+
     try {
+      // Creator pushing local files that aren't in Supabase yet to project-files/${sharedKey}/...
+      const localCandidates: any[] = [];
+      try {
+        const idb = (await getFromIndexedDB(`tiny_wins_project_files_${projectId}`)) || [];
+        if (Array.isArray(idb)) localCandidates.push(...idb);
+      } catch {}
+
+      try {
+        const rawLocal = localStorage.getItem(`tiny_wins_project_${projectId}_files`) ||
+                         localStorage.getItem(`tiny_wins_project_files_${projectId}`);
+        if (rawLocal) {
+          const parsed = JSON.parse(rawLocal);
+          if (Array.isArray(parsed)) localCandidates.push(...parsed);
+        }
+      } catch {}
+
+      localCandidates.push(...files);
+
+      const pushedNames = new Set<string>();
+
+      for (const cand of localCandidates) {
+        if (!cand || !cand.name || pushedNames.has(cand.name)) continue;
+        const base64Data = cand.data_url || (cand.url?.startsWith("data:") ? cand.url : null);
+        if (base64Data && base64Data.startsWith("data:")) {
+          pushedNames.add(cand.name);
+          try {
+            const blob = dataURLtoBlob(base64Data);
+            if (blob) {
+              const cleanFileName = cand.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+              const uploadPath = `${sharedKey}/${Date.now()}_${cleanFileName}`;
+              const { error: upErr } = await supabase.storage
+                .from("project-files")
+                .upload(uploadPath, blob, {
+                  upsert: true,
+                  contentType: cand.type || cand.mimetype || "application/pdf",
+                });
+
+              const { data: pubData } = supabase.storage.from("project-files").getPublicUrl(uploadPath);
+              const cloudUrl = pubData?.publicUrl || "";
+
+              await supabase.from("project_shared_materials").insert({
+                project_id: projectId,
+                join_code: sharedKey,
+                name: cand.name,
+                size: typeof cand.size === "number" ? `${(cand.size / 1024).toFixed(1)} KB` : (cand.size || "100 KB"),
+                type: cand.type || cand.mimetype || "application/pdf",
+                file_url: cloudUrl || base64Data,
+                uploader_name: cand.uploader_name || currentUser?.name || "Instructor",
+              });
+            }
+          } catch (pushErr) {
+            console.warn("Could not push local file to cloud during sync:", cand.name, pushErr);
+          }
+        }
+      }
+
       if (projectId) {
-        const loadedFiles = await fetchProjectFiles(projectId, members.map((m) => m.user_id));
+        const loadedFiles = await fetchSharedFiles(projectId, project);
         setFiles(loadedFiles);
       }
       await loadProjectData();
       setNotice("✅ Latest materials synced successfully!");
     } catch (err: any) {
       console.warn("Sync warning:", err);
+      if (projectId) {
+        try {
+          const fallbackFiles = await fetchSharedFiles(projectId, project);
+          setFiles(fallbackFiles);
+        } catch {}
+      }
       setNotice("Materials synced with available sources.");
     } finally {
       setSyncing(false);
@@ -304,10 +401,118 @@ export default function ProjectDetailPage() {
     window.setTimeout(() => setNotice(""), 3000);
   };
 
-  const loadFiles = async (id: string, memberIds: string[]) => {
+  const fetchSharedFiles = async (id: string, currentProj?: Project | null): Promise<StoredFile[]> => {
+    const supabase = requireSupabase();
+    const sharedKey = (currentProj?.join_code || project?.join_code || "TINY-2004").trim().toUpperCase();
+    const fileMap = new Map<string, StoredFile>();
+
+    // 1. Query project_shared_materials matching EITHER project_id OR join_code
+    try {
+      const { data: dbFiles, error: dbErr } = await supabase
+        .from("project_shared_materials")
+        .select("*")
+        .or(`project_id.eq.${id},join_code.ilike.${sharedKey}`)
+        .order("created_at", { ascending: false });
+
+      if (!dbErr && dbFiles && Array.isArray(dbFiles)) {
+        dbFiles.forEach((row: any) => {
+          if (row.name) {
+            fileMap.set(row.name, {
+              id: row.id ? String(row.id) : `db-${row.name}`,
+              name: row.name,
+              path: row.file_path || `${sharedKey}/${row.name}`,
+              size: row.size,
+              mimetype: row.type || "application/pdf",
+              type: row.type || "application/pdf",
+              url: row.file_url || row.url,
+              data_url: row.file_url || row.url,
+              created_at: row.created_at,
+              uploaded_at: row.created_at,
+              uploader_name: row.uploader_name || "Instructor",
+              metadata: {
+                size: row.size,
+                mimetype: row.type,
+                uploader_name: row.uploader_name,
+                url: row.file_url || row.url,
+              },
+            });
+          }
+        });
+      }
+    } catch (err) {
+      console.warn("Could not query project_shared_materials:", err);
+    }
+
+    // 2. ALSO list files directly from the Supabase Storage folder:
+    // supabase.storage.from('project-files').list(sharedKey) and supabase.storage.from('project-files').list(id)
+    try {
+      const foldersToList = Array.from(new Set([sharedKey, id].filter(Boolean)));
+      for (const folder of foldersToList) {
+        const { data: storageList, error: listErr } = await supabase.storage
+          .from("project-files")
+          .list(folder, { sortBy: { column: "created_at", order: "desc" } });
+
+        if (!listErr && storageList && Array.isArray(storageList)) {
+          for (const item of storageList) {
+            if (item.name && item.name !== ".emptyFolderPlaceholder") {
+              const cleanName = item.name.replace(/^\d+_/, "").replace(/^\d+-/, "");
+              const storagePath = `${folder}/${item.name}`;
+              const { data: pubData } = supabase.storage.from("project-files").getPublicUrl(storagePath);
+              const publicUrl = pubData?.publicUrl || "";
+
+              const existing = fileMap.get(cleanName) || fileMap.get(item.name);
+              const mergedItem: StoredFile = {
+                id: item.id || `storage-${cleanName}`,
+                name: cleanName,
+                path: storagePath,
+                size: existing?.size || (item.metadata?.size ? `${Math.round(item.metadata.size / 1024)} KB` : undefined),
+                mimetype: existing?.mimetype || item.metadata?.mimetype || "application/pdf",
+                type: existing?.type || item.metadata?.mimetype || "application/pdf",
+                url: publicUrl || existing?.url || "",
+                data_url: publicUrl || existing?.data_url || "",
+                created_at: item.created_at || existing?.created_at || new Date().toISOString(),
+                uploaded_at: item.created_at || existing?.uploaded_at || new Date().toISOString(),
+                uploader_name: existing?.uploader_name || "Instructor",
+                metadata: {
+                  size: item.metadata?.size || existing?.size,
+                  mimetype: item.metadata?.mimetype || existing?.mimetype,
+                  url: publicUrl,
+                },
+              };
+
+              fileMap.set(cleanName, mergedItem);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("Storage listing error:", err);
+    }
+
+    // 3. Fallback from fetchProjectFiles (IndexedDB & localStorage)
+    try {
+      const localAndProj = await fetchProjectFiles(id, members.map((m) => m.user_id));
+      localAndProj.forEach((f) => {
+        if (!fileMap.has(f.name)) {
+          fileMap.set(f.name, f);
+        } else {
+          const ex = fileMap.get(f.name)!;
+          if (!ex.url && f.url) {
+            fileMap.set(f.name, { ...ex, url: f.url, data_url: f.data_url || f.url });
+          }
+        }
+      });
+    } catch (err) {
+      console.warn("fetchProjectFiles fallback warning:", err);
+    }
+
+    return Array.from(fileMap.values());
+  };
+
+  const loadFiles = async (id: string, currentProj?: Project | null) => {
     if (!session) return;
     try {
-      const loaded = await fetchProjectFiles(id, memberIds);
+      const loaded = await fetchSharedFiles(id, currentProj || project);
       setFiles(loaded);
     } catch (err: any) {
       console.warn("Could not load project files:", err);
@@ -344,27 +549,91 @@ export default function ProjectDetailPage() {
     setUploading(true);
     setError("");
 
+    const supabase = requireSupabase();
+    const sharedKey = (project?.join_code || "TINY-2004").trim().toUpperCase();
+
     try {
-      const uploaderName = profile?.full_name || session?.user?.email?.split("@")[0] || "Instructor";
-      const { file: storedFile, message } = await uploadProjectFile(
-        projectId,
-        session.user.id,
-        file,
-        uploaderName
-      );
+      // 1. Upload raw binary file to Supabase Storage bucket project-files under sharedKey
+      const cleanName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const filePath = `${sharedKey}/${Date.now()}_${cleanName}`;
+
+      let publicFileUrl = "";
+      try {
+        const { error: uploadErr } = await supabase.storage
+          .from("project-files")
+          .upload(filePath, file, { upsert: true, contentType: file.type || "application/pdf" });
+
+        if (!uploadErr) {
+          const { data: pubUrlData } = supabase.storage
+            .from("project-files")
+            .getPublicUrl(filePath);
+          publicFileUrl = pubUrlData?.publicUrl || "";
+        } else {
+          console.warn("Storage upload warning, using fallback:", uploadErr);
+        }
+      } catch (stErr) {
+        console.warn("Storage exception, fallback active:", stErr);
+      }
+
+      // Base64 fallback for instant local rendering / fallback URL
+      const base64FallbackUrl = await readFileAsDataUrl(file);
+      const effectiveUrl = publicFileUrl || base64FallbackUrl;
+      const uploaderName = currentUser?.name || "Instructor";
+      const formattedSize = `${(file.size / 1024).toFixed(1)} KB`;
+
+      // 2. Insert lightweight metadata row into project_shared_materials
+      try {
+        await supabase.from("project_shared_materials").insert({
+          project_id: projectId,
+          join_code: sharedKey,
+          name: file.name,
+          size: formattedSize,
+          type: file.type || "application/pdf",
+          file_url: effectiveUrl,
+          uploader_name: uploaderName,
+        });
+      } catch (insertErr) {
+        console.warn("Could not insert to project_shared_materials:", insertErr);
+      }
+
+      // Also persist with uploadProjectFile for local & legacy redundancy
+      try {
+        await uploadProjectFile(projectId, session.user.id, file, uploaderName);
+      } catch {}
+
+      const newStoredFile: StoredFile = {
+        id: `file-${Date.now()}-${cleanName}`,
+        name: file.name,
+        path: filePath,
+        size: formattedSize,
+        mimetype: file.type || "application/pdf",
+        type: file.type || "application/pdf",
+        url: effectiveUrl,
+        data_url: base64FallbackUrl,
+        created_at: new Date().toISOString(),
+        uploaded_at: new Date().toISOString(),
+        uploader_name: uploaderName,
+        uploader_id: session.user.id,
+        metadata: {
+          size: formattedSize,
+          mimetype: file.type || "application/pdf",
+          uploader_name: uploaderName,
+          url: effectiveUrl,
+        },
+      };
 
       // Immediate UI Feedback: Append new file to active files state array immediately
       setFiles((prev) => [
-        storedFile,
-        ...prev.filter((f) => f.name !== storedFile.name && f.id !== storedFile.id),
+        newStoredFile,
+        ...prev.filter((f) => f.name !== newStoredFile.name && f.id !== newStoredFile.id),
       ]);
-      setNotice(message || "✅ File uploaded and secured!");
+      setNotice("✅ File uploaded and secured!");
       window.setTimeout(() => setNotice(""), 4000);
     } catch (err: any) {
       console.error("File upload failed:", err);
       setError(`Unable to upload file: ${err?.message || err?.error_description || "Storage error"}`);
     } finally {
-      // In the finally block, ALWAYS reset uploading = false so the button never stays stuck on "Uploading..."
+      // In the finally block, ALWAYS reset uploading = false
       setUploading(false);
       event.target.value = "";
     }
@@ -409,7 +678,21 @@ export default function ProjectDetailPage() {
     if (preview?.file.name === file.name || preview?.file.id === file.id) {
       setPreview(null);
     }
+
     try {
+      const supabase = requireSupabase();
+      const sharedKey = (project?.join_code || "TINY-2004").trim().toUpperCase();
+
+      await supabase
+        .from("project_shared_materials")
+        .delete()
+        .or(`project_id.eq.${projectId},join_code.ilike.${sharedKey}`)
+        .eq("name", file.name);
+
+      if (file.path) {
+        await supabase.storage.from("project-files").remove([file.path]).catch(() => {});
+      }
+
       await deleteProjectFile(projectId, file.name, file.path, file.id);
     } catch (err) {
       console.warn("Could not remove file:", err);

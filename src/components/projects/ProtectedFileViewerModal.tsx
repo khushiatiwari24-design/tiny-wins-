@@ -7,7 +7,7 @@ export interface FileData {
   name?: string;
   url?: string;
   type?: string;
-  size?: number;
+  size?: number | string;
   uploader_name?: string;
   created_at?: string;
 }
@@ -19,7 +19,7 @@ export interface ProtectedFileViewerModalProps {
   content?: string; // For notes or inline text
   fileUrl?: string; // For files
   fileMimeType?: string;
-  fileSize?: number;
+  fileSize?: number | string;
   authorName?: string;
   createdAt?: string;
   onClose: () => void;
@@ -327,9 +327,11 @@ export default function ProtectedFileViewerModal(props: ProtectedFileViewerModal
                 {type === "note" ? "Secure Study Material" : "Protected Document"}
                 {file.uploader_name ? ` • By ${file.uploader_name}` : ""}
                 {file.created_at ? ` • ${new Date(file.created_at).toLocaleDateString()}` : ""}
-                {file.size !== undefined && file.size > 0
-                  ? ` • ${(file.size / 1024).toFixed(1)} KB`
-                  : ""}
+                {file.size !== undefined && (
+                  typeof file.size === "number"
+                    ? file.size > 0 ? ` • ${(file.size / 1024).toFixed(1)} KB` : ""
+                    : file.size ? ` • ${file.size}` : ""
+                )}
               </p>
             </div>
           </div>
