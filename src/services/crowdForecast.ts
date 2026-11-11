@@ -7,7 +7,19 @@ export function getSeverity(occupancy: number): CrowdSeverity {
   return 'very_high';
 }
 
-export function getSeverityLabel(severity: CrowdSeverity): string {
+export function getSeverityLabel(severity: CrowdSeverity, isRoadMode = false): string {
+  if (isRoadMode) {
+    switch (severity) {
+      case 'low':
+        return 'Smooth Traffic (Fast commute)';
+      case 'moderate':
+        return 'Moderate Flow (Minor delay)';
+      case 'high':
+        return 'Heavy Congestion (Bottlenecks)';
+      case 'very_high':
+        return 'Severe Gridlock (Long delays)';
+    }
+  }
   switch (severity) {
     case 'low':
       return 'Comfortable (Seats likely)';
@@ -73,15 +85,16 @@ export function predictCrowd(
   const minute = parseInt(minStr || '0', 10);
   const timeDecimal = hour + minute / 60;
 
+  const isRoad = route.mode === 'car' || route.mode === 'bike';
+
   // 1. Time-of-day curve (Gaussian peaks for AM 8:30-10:15 and PM 17:30-20:00)
-  // AM peak center = 9.25, PM peak center = 18.5
   const amPeakDist = Math.abs(timeDecimal - 9.25);
   const pmPeakDist = Math.abs(timeDecimal - 18.5);
 
   let amFactor = Math.max(0, 1 - Math.pow(amPeakDist / 2.0, 2));
   let pmFactor = Math.max(0, 1 - Math.pow(pmPeakDist / 2.2, 2));
 
-  // Determine directional asymmetry
+  // Directional asymmetry in Mumbai
   const isSouthbound =
     route.destinationStationId === 'churchgate' ||
     route.destinationStationId === 'csmt' ||
@@ -100,23 +113,23 @@ export function predictCrowd(
     pmFactor *= 1.2;
   }
 
-  // Base diurnal demand profile (0.15 at night, 0.45 mid-day lull, up to 1.0 at peak)
+  // Base diurnal demand profile
   let diurnalMultiplier = 0.25;
   if (timeDecimal >= 5 && timeDecimal < 7) {
-    diurnalMultiplier = 0.35 + (timeDecimal - 5) * 0.15; // 0.35 -> 0.65
+    diurnalMultiplier = 0.35 + (timeDecimal - 5) * 0.15;
   } else if (timeDecimal >= 7 && timeDecimal < 11.5) {
     diurnalMultiplier = 0.65 + amFactor * 0.45;
   } else if (timeDecimal >= 11.5 && timeDecimal < 16.5) {
-    diurnalMultiplier = 0.48; // afternoon lull
+    diurnalMultiplier = 0.48;
   } else if (timeDecimal >= 16.5 && timeDecimal < 21.5) {
     diurnalMultiplier = 0.65 + pmFactor * 0.45;
   } else if (timeDecimal >= 21.5 && timeDecimal <= 24) {
-    diurnalMultiplier = 0.6 - (timeDecimal - 21.5) * 0.14; // tapering down
+    diurnalMultiplier = 0.6 - (timeDecimal - 21.5) * 0.14;
   } else {
-    diurnalMultiplier = 0.15; // early morning 00:00 - 05:00
+    diurnalMultiplier = 0.15;
   }
 
-  // Weekend reduction: no intense office surge, smoother weekend distribution
+  // Weekend reduction
   if (isWeekend) {
     diurnalMultiplier = diurnalMultiplier * 0.68 + 0.12;
   }
@@ -124,13 +137,16 @@ export function predictCrowd(
   // Weather / monsoon modifier
   let weatherMultiplier = 1.0;
   if (monsoonMultiplier === 'light_rain') {
-    weatherMultiplier = 1.1;
+    weatherMultiplier = isRoad ? 1.18 : 1.1;
   } else if (monsoonMultiplier === 'heavy_rain') {
-    // Heavy rain shifts crowds to metro lines and causes slower trains, boosting platform/coach density
-    if (route.mode === 'metro') {
+    if (route.mode === 'car') {
+      weatherMultiplier = 1.38;
+    } else if (route.mode === 'bike') {
+      weatherMultiplier = 1.42;
+    } else if (route.mode === 'metro') {
       weatherMultiplier = 1.28;
-    } else if (route.mode === 'bus_ac' || route.mode === 'bus_regular') {
-      weatherMultiplier = 1.15;
+    } else if (route.mode === 'bus_ac' || route.mode === 'bus_regular' || route.mode === 'bus') {
+      weatherMultiplier = 1.25;
     } else {
       weatherMultiplier = 1.22;
     }
@@ -138,38 +154,51 @@ export function predictCrowd(
 
   // Mode modifier
   let modeFactor = 1.0;
-  if (route.mode === 'train_ac') modeFactor = 0.82; // AC fares moderate peak crush
+  if (route.mode === 'train_ac') modeFactor = 0.82;
   if (route.mode === 'bus_ac') modeFactor = 0.74;
-  if (route.mode === 'metro') modeFactor = 0.88; // Metro high frequency clears crowd quickly
-  if (route.mode === 'train_fast') modeFactor = 1.08; // Fast locals attract huge demand
+  if (route.mode === 'metro') modeFactor = 0.88;
+  if (route.mode === 'train_fast') modeFactor = 1.08;
+  if (route.mode === 'car') modeFactor = 1.15;
+  if (route.mode === 'bike') modeFactor = 0.86;
+  if (route.mode === 'bus' || route.mode === 'bus_regular') modeFactor = 0.94;
+  if (route.mode === 'multimodal') modeFactor = 0.80;
 
-  // Calculate raw occupancy percentage
+  // Calculate raw occupancy / congestion percentage
   let occupancy = Math.round(route.baselineOccupancy * (diurnalMultiplier / 0.85) * modeFactor * weatherMultiplier);
   occupancy = Math.max(12, Math.min(99, occupancy));
 
   const severity = getSeverity(occupancy);
 
-  // Confidence calculation (higher on regular weekdays during standard operating hours)
+  // Confidence calculation
   const isNight = timeDecimal < 5.5 || timeDecimal > 23.5;
   let confidenceScore = isNight ? 82 : isWeekend ? 88 : 95;
   if (monsoonMultiplier === 'heavy_rain') confidenceScore -= 6;
   const confidenceLabel = confidenceScore >= 90 ? 'High' : confidenceScore >= 80 ? 'Moderate' : 'Provisional';
 
-  // Seating probability (inverse of occupancy with mode perks)
+  // Seating probability (or on-time reliability for road)
   let seatingProb = Math.max(4, Math.round(100 - occupancy * 1.15));
   if (route.mode === 'train_ac' || route.mode === 'bus_ac') seatingProb = Math.min(92, seatingProb + 25);
   if (route.mode === 'metro') seatingProb = Math.max(15, Math.round((100 - occupancy) * 0.7));
+  if (isRoad) {
+    seatingProb = Math.max(30, Math.min(98, Math.round(105 - occupancy * 0.72)));
+  }
 
-  // Estimated wait time calculation based on frequency and crowd backlog
-  const baseFreq = (timeDecimal >= 7.5 && timeDecimal <= 10.5) || (timeDecimal >= 17 && timeDecimal <= 20.5)
-    ? route.frequencyMinutes.peak
-    : route.frequencyMinutes.offPeak;
+  // Wait time / traffic delay calculation
+  let estimatedWaitMinutes = 0;
+  if (isRoad) {
+    const baseDelay = route.mode === 'car' ? 8 : 4;
+    estimatedWaitMinutes = Math.max(2, Math.round(baseDelay * (occupancy / 50) * (weatherMultiplier > 1 ? 1.3 : 1)));
+  } else {
+    const baseFreq = (timeDecimal >= 7.5 && timeDecimal <= 10.5) || (timeDecimal >= 17 && timeDecimal <= 20.5)
+      ? route.frequencyMinutes.peak
+      : route.frequencyMinutes.offPeak;
 
-  let waitMultiplier = 1.0;
-  if (occupancy > 85) waitMultiplier = 1.6; // Might miss the first train/bus due to crush
-  else if (occupancy > 75) waitMultiplier = 1.25;
+    let waitMultiplier = 1.0;
+    if (occupancy > 85) waitMultiplier = 1.6;
+    else if (occupancy > 75) waitMultiplier = 1.25;
 
-  const estimatedWaitMinutes = Math.max(2, Math.round(baseFreq * 0.6 * waitMultiplier));
+    estimatedWaitMinutes = Math.max(2, Math.round(baseFreq * 0.6 * waitMultiplier));
+  }
 
   // Coach breakdown
   const coachBreakdown: CoachBreakdown = {
@@ -180,16 +209,15 @@ export function predictCrowd(
   };
 
   // Calculate optimal alternative recommendation
-  // Look 25-45 minutes before or after for lower crowd
   let deltaMinutes = 30;
   if (timeDecimal >= 8 && timeDecimal <= 9.75) {
-    deltaMinutes = -35; // suggest departing earlier before peak hits
+    deltaMinutes = -35;
   } else if (timeDecimal > 9.75 && timeDecimal <= 11) {
-    deltaMinutes = 40; // suggest departing after peak clears
+    deltaMinutes = 40;
   } else if (timeDecimal >= 17 && timeDecimal <= 19.25) {
-    deltaMinutes = -40; // earlier in evening
+    deltaMinutes = -40;
   } else if (timeDecimal > 19.25 && timeDecimal <= 20.5) {
-    deltaMinutes = 35; // later in evening
+    deltaMinutes = 35;
   } else {
     deltaMinutes = 25;
   }
@@ -198,14 +226,13 @@ export function predictCrowd(
   const recMin = Math.round((timeDecimal * 60 + deltaMinutes) % 60);
   const recommendedTime = `${String(Math.max(0, recHour)).padStart(2, '0')}:${String(Math.abs(recMin)).padStart(2, '0')}`;
 
-  // Evaluate crowd at recommended time
   const recPrediction = predictCrowdRaw(route, recommendedTime, isWeekend, monsoonMultiplier);
   const occupancyDelta = recPrediction - occupancy;
 
   return {
     occupancy,
     severity,
-    label: getSeverityLabel(severity),
+    label: getSeverityLabel(severity, isRoad),
     confidenceScore,
     confidenceLabel,
     estimatedWaitMinutes,
@@ -215,8 +242,11 @@ export function predictCrowd(
       recommendedTime,
       occupancyDelta,
       waitTimeDelta: occupancyDelta < 0 ? -2 : 0,
-      reason:
-        occupancyDelta <= -15
+      reason: isRoad
+        ? occupancyDelta <= -12
+          ? `Departing at ${recommendedTime} bypasses peak highway congestion by ${Math.abs(occupancyDelta)}%`
+          : `At ${recommendedTime}, traffic signals and flyovers are clearer with minimal delays`
+        : occupancyDelta <= -15
           ? `Departing at ${recommendedTime} reduces crowd occupancy by ${Math.abs(occupancyDelta)}%`
           : `At ${recommendedTime}, platform congestion is lower with smoother boarding`,
     },
@@ -236,6 +266,8 @@ export function predictCrowdRaw(
   const hour = parseInt(hourStr, 10);
   const minute = parseInt(minStr || '0', 10);
   const timeDecimal = hour + minute / 60;
+
+  const isRoad = route.mode === 'car' || route.mode === 'bike';
 
   const amPeakDist = Math.abs(timeDecimal - 9.25);
   const pmPeakDist = Math.abs(timeDecimal - 18.5);
@@ -279,9 +311,12 @@ export function predictCrowdRaw(
   if (isWeekend) diurnal = diurnal * 0.68 + 0.12;
 
   let weather = 1.0;
-  if (monsoonMultiplier === 'light_rain') weather = 1.1;
+  if (monsoonMultiplier === 'light_rain') weather = isRoad ? 1.18 : 1.1;
   if (monsoonMultiplier === 'heavy_rain') {
-    weather = route.mode === 'metro' ? 1.28 : 1.22;
+    if (route.mode === 'car') weather = 1.38;
+    else if (route.mode === 'bike') weather = 1.42;
+    else if (route.mode === 'metro') weather = 1.28;
+    else weather = 1.22;
   }
 
   let modeFactor = 1.0;
@@ -289,6 +324,10 @@ export function predictCrowdRaw(
   if (route.mode === 'bus_ac') modeFactor = 0.74;
   if (route.mode === 'metro') modeFactor = 0.88;
   if (route.mode === 'train_fast') modeFactor = 1.08;
+  if (route.mode === 'car') modeFactor = 1.15;
+  if (route.mode === 'bike') modeFactor = 0.86;
+  if (route.mode === 'bus' || route.mode === 'bus_regular') modeFactor = 0.94;
+  if (route.mode === 'multimodal') modeFactor = 0.80;
 
   const raw = Math.round(route.baselineOccupancy * (diurnal / 0.85) * modeFactor * weather);
   return Math.max(12, Math.min(99, raw));
@@ -305,6 +344,7 @@ export function generate24HourForecast(
 ) {
   const points = [];
   const totalSlots = (24 * 60) / intervalMinutes;
+  const isRoad = route.mode === 'car' || route.mode === 'bike';
 
   for (let i = 0; i < totalSlots; i++) {
     const totalMinutes = i * intervalMinutes;
@@ -320,7 +360,7 @@ export function generate24HourForecast(
       minute,
       occupancy,
       severity,
-      severityLabel: getSeverityLabel(severity),
+      severityLabel: getSeverityLabel(severity, isRoad),
       comfortThreshold: 50,
       peakThreshold: 80,
     });

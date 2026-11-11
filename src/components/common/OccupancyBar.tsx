@@ -6,6 +6,8 @@ interface OccupancyBarProps {
   severity: CrowdSeverity;
   height?: string;
   showLabels?: boolean;
+  isRoadMode?: boolean;
+  customLabel?: string;
 }
 
 export const OccupancyBar: React.FC<OccupancyBarProps> = ({
@@ -13,6 +15,8 @@ export const OccupancyBar: React.FC<OccupancyBarProps> = ({
   severity,
   height = 'h-2',
   showLabels = false,
+  isRoadMode = false,
+  customLabel,
 }) => {
   let barGradient = 'from-emerald-500 to-teal-500';
   if (severity === 'moderate') {
@@ -23,11 +27,13 @@ export const OccupancyBar: React.FC<OccupancyBarProps> = ({
     barGradient = 'from-rose-500 to-red-600';
   }
 
+  const defaultLabel = isRoadMode ? 'Traffic Congestion' : 'Capacity load';
+
   return (
     <div className="w-full">
       {showLabels && (
         <div className="flex justify-between items-center text-xs text-slate-500 dark:text-slate-400 mb-1">
-          <span>Capacity load</span>
+          <span>{customLabel || defaultLabel}</span>
           <span className="font-semibold text-slate-700 dark:text-slate-200">{occupancy}%</span>
         </div>
       )}

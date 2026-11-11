@@ -351,7 +351,9 @@ export const SavedRoutesPage: React.FC = () => {
                     <option value="train_slow">Slow Train</option>
                     <option value="train_ac">AC Train</option>
                     <option value="metro">Metro</option>
-                    <option value="bus_ac">AC Bus</option>
+                    <option value="bus_ac">BEST Bus (AC)</option>
+                    <option value="bike">Bike / Two-Wheeler</option>
+                    <option value="car">Car / Cab</option>
                   </select>
                 </div>
               </div>

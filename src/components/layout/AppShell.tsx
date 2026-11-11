@@ -76,6 +76,14 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
     { name: 'Settings', path: '/settings', icon: Settings },
   ];
 
+  const bottomNavItems = [
+    { name: 'Overview', path: '/', icon: LayoutDashboard },
+    { name: 'Plan', path: '/plan', icon: RouteIcon },
+    { name: 'Forecast', path: '/forecast', icon: Activity },
+    { name: 'Analytics', path: '/analytics', icon: BarChart3 },
+    { name: 'Saved', path: '/saved', icon: Bookmark },
+  ];
+
   // Close menus on route change
   useEffect(() => {
     setMobileMenuOpen(false);
@@ -94,8 +102,8 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col antialiased">
       {/* Top Banner Alert if Monsoon Simulation Active */}
       {settings.monsoonMultiplier !== 'normal' && (
-        <div className="bg-amber-500 text-slate-950 px-4 py-1.5 text-xs font-semibold flex items-center justify-center gap-2 text-center">
-          <CloudRain className="w-3.5 h-3.5" />
+        <div className="bg-amber-500 text-slate-950 px-3 sm:px-4 py-1.5 text-[11px] sm:text-xs font-semibold flex items-center justify-center gap-2 text-center">
+          <CloudRain className="w-3.5 h-3.5 shrink-0" />
           <span>
             Active Simulation: {settings.monsoonMultiplier === 'heavy_rain' ? 'Heavy Waterlogging Surge' : 'Monsoon Light Rain'} mode. Crowd densities calibrated for rain conditions.
           </span>
@@ -110,38 +118,38 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
 
       {/* Main Top Navigation Header */}
       <header className="sticky top-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200/80 dark:border-slate-800">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-2 sm:gap-4">
           {/* Logo & City Selector */}
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 sm:gap-4 min-w-0">
             <button
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="lg:hidden p-2 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 focus:outline-none"
+              className="lg:hidden p-2 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 focus:outline-none min-h-[40px] min-w-[40px] flex items-center justify-center"
               aria-label="Toggle navigation"
             >
               {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </button>
 
-            <NavLink to="/" className="flex items-center gap-2.5 group">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-teal-600 to-emerald-500 flex items-center justify-center text-white shadow-md shadow-teal-500/20 group-hover:scale-105 transition-transform">
-                <Activity className="w-5 h-5" />
+            <NavLink to="/" className="flex items-center gap-2 sm:gap-2.5 group min-w-0">
+              <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-gradient-to-tr from-teal-600 to-emerald-500 flex items-center justify-center text-white shadow-md shadow-teal-500/20 group-hover:scale-105 transition-transform shrink-0">
+                <Activity className="w-4 h-4 sm:w-5 sm:h-5" />
               </div>
-              <div>
+              <div className="min-w-0">
                 <div className="flex items-center gap-1.5">
-                  <span className="font-bold text-lg tracking-tight text-slate-900 dark:text-white">
+                  <span className="font-bold text-base sm:text-lg tracking-tight text-slate-900 dark:text-white truncate">
                     Crowd<span className="text-teal-600 dark:text-teal-400">Sense</span>
                   </span>
                   <span className="hidden sm:inline-flex px-1.5 py-0.5 text-[10px] uppercase font-bold tracking-wider rounded bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300 border border-teal-200/60 dark:border-teal-800">
                     Urban Transit
                   </span>
                 </div>
-                <div className="text-[11px] text-slate-600 dark:text-slate-400 font-medium hidden sm:block">
+                <div className="text-[10px] sm:text-[11px] text-slate-600 dark:text-slate-400 font-medium hidden sm:block truncate">
                   Predictive Mobility Intelligence
                 </div>
               </div>
             </NavLink>
 
             {/* City Selector Pill */}
-            <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-800 text-xs font-medium text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-800 text-xs font-medium text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 shrink-0">
               <MapPin className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
               <span>Mumbai MMR</span>
               <span className="text-[10px] text-teal-600 dark:text-teal-400 bg-teal-100/70 dark:bg-teal-950 px-1.5 rounded-full font-semibold">
@@ -158,19 +166,19 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
             >
               <span className="flex items-center gap-2">
                 <Search className="w-3.5 h-3.5 text-slate-400 group-hover:text-teal-600 dark:group-hover:text-teal-400 transition-colors" />
-                <span>Search stations, corridors, or routes (e.g. Dadar, Borivali)...</span>
+                <span className="truncate">Search stations, corridors, or routes (e.g. Dadar, Borivali)...</span>
               </span>
-              <kbd className="hidden sm:inline-block px-1.5 py-0.5 text-[10px] font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded text-slate-500">
+              <kbd className="hidden lg:inline-block px-1.5 py-0.5 text-[10px] font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded text-slate-500">
                 ⌘K
               </kbd>
             </button>
           </div>
 
           {/* Actions: Theme Toggle, Notifications, User/Settings */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <button
               onClick={() => setSearchModalOpen(true)}
-              className="md:hidden p-2 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg"
+              className="md:hidden p-2 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg min-h-[40px] min-w-[40px] flex items-center justify-center"
               aria-label="Search"
             >
               <Search className="w-4 h-4" />
@@ -179,7 +187,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
             {/* Dark / Light Toggle */}
             <button
               onClick={toggleTheme}
-              className="p-2 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
+              className="p-2 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors min-h-[40px] min-w-[40px] flex items-center justify-center"
               title={`Switch to ${settings.theme === 'dark' ? 'light' : 'dark'} mode`}
               aria-label="Toggle theme"
             >
@@ -190,19 +198,19 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
             <div className="relative">
               <button
                 onClick={() => setNotificationsOpen(!notificationsOpen)}
-                className="p-2 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg relative transition-colors"
+                className="p-2 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg relative transition-colors min-h-[40px] min-w-[40px] flex items-center justify-center"
                 title="Transit Advisories & Alerts"
                 aria-label="Notifications"
               >
                 <Bell className="w-4 h-4" />
                 {unreadCount > 0 && (
-                  <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
+                  <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
                 )}
               </button>
 
               {/* Notifications Popover */}
               {notificationsOpen && (
-                <div className="absolute right-0 mt-2 w-80 sm:w-96 bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 z-50 p-4 animate-in fade-in slide-in-from-top-2">
+                <div className="absolute right-0 mt-2 w-72 sm:w-96 bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 z-50 p-4 animate-in fade-in slide-in-from-top-2">
                   <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
                     <div className="flex items-center gap-2">
                       <span className="font-semibold text-sm text-slate-900 dark:text-white">
@@ -285,7 +293,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
             {/* Quick Action Plan CTA */}
             <button
               onClick={() => navigate('/plan')}
-              className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-semibold shadow-sm transition-all"
+              className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-semibold shadow-sm transition-all min-h-[36px]"
             >
               <RouteIcon className="w-3.5 h-3.5" />
               <span>Plan Trip</span>
@@ -295,7 +303,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
       </header>
 
       {/* Main Body Layout: Sidebar + Content */}
-      <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 flex gap-6">
+      <div className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-5 sm:py-6 flex gap-6 pb-24 lg:pb-8">
         {/* Desktop Left Sidebar Navigation */}
         <aside className="w-56 shrink-0 hidden lg:block">
           <div className="sticky top-24 space-y-1">
@@ -333,7 +341,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
                   <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
                 </div>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-normal mb-2">
-                  Western Fast running on 4m peak frequency. Metro Line 1 smooth.
+                  Western Fast running on 4m peak frequency. Metro Line 1 & 3 smooth.
                 </p>
                 <button
                   onClick={() => navigate('/forecast')}
@@ -354,7 +362,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
               className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs"
               onClick={() => setMobileMenuOpen(false)}
             />
-            <div className="fixed inset-y-0 left-0 w-72 bg-white dark:bg-slate-900 shadow-2xl p-6 flex flex-col z-50 border-r border-slate-200 dark:border-slate-800">
+            <div className="fixed inset-y-0 left-0 w-72 bg-white dark:bg-slate-900 shadow-2xl p-5 sm:p-6 flex flex-col z-50 border-r border-slate-200 dark:border-slate-800">
               <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800">
                 <div className="flex items-center gap-2">
                   <div className="w-8 h-8 rounded-lg bg-teal-600 flex items-center justify-center text-white font-bold">
@@ -366,13 +374,13 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
                 </div>
                 <button
                   onClick={() => setMobileMenuOpen(false)}
-                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 min-h-[38px] min-w-[38px] flex items-center justify-center"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
-              <nav className="mt-6 space-y-1.5 flex-1">
+              <nav className="mt-6 space-y-1.5 flex-1 overflow-y-auto">
                 {navItems.map((item) => {
                   const Icon = item.icon;
                   return (
@@ -408,12 +416,36 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
         <main className="flex-1 min-w-0">{children}</main>
       </div>
 
+      {/* Fixed Mobile Bottom Navigation Bar (Shown on mobile screens < 1024px) */}
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-900/95 border-t border-slate-200/80 dark:border-slate-800 backdrop-blur-md flex items-center justify-around py-1.5 px-2 shadow-lg">
+        {bottomNavItems.map((item) => {
+          const Icon = item.icon;
+          return (
+            <NavLink
+              key={item.path}
+              to={item.path}
+              end={item.path === '/'}
+              className={({ isActive }) =>
+                `flex flex-col items-center justify-center py-1 px-3 rounded-xl text-[10px] font-semibold transition-all min-h-[44px] min-w-[50px] ${
+                  isActive
+                    ? 'text-teal-600 dark:text-teal-400 font-bold'
+                    : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'
+                }`
+              }
+            >
+              <Icon className="w-5 h-5 mb-0.5" />
+              <span>{item.name}</span>
+            </NavLink>
+          );
+        })}
+      </nav>
+
       {/* Quick Search Modal */}
       {searchModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-20 bg-slate-900/60 backdrop-blur-xs">
+        <div className="fixed inset-0 z-50 flex items-start justify-center p-3 sm:p-4 pt-16 sm:pt-20 bg-slate-900/60 backdrop-blur-xs">
           <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-xl w-full p-4 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in fade-in zoom-in-95">
             <div className="flex items-center gap-3 px-3 py-2 bg-slate-100 dark:bg-slate-800 rounded-xl">
-              <Search className="w-4 h-4 text-slate-400" />
+              <Search className="w-4 h-4 text-slate-400 shrink-0" />
               <input
                 type="text"
                 value={searchQuery}
@@ -424,7 +456,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
               />
               <button
                 onClick={() => setSearchModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 min-h-[32px] min-w-[32px] flex items-center justify-center"
               >
                 <X className="w-4 h-4" />
               </button>

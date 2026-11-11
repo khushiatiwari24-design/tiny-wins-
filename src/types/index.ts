@@ -3,8 +3,12 @@ export type TransportMode =
   | 'train_slow'
   | 'train_ac'
   | 'metro'
+  | 'bus'
   | 'bus_ac'
-  | 'bus_regular';
+  | 'bus_regular'
+  | 'bike'
+  | 'car'
+  | 'multimodal';
 
 export type CrowdSeverity = 'low' | 'moderate' | 'high' | 'very_high';
 
@@ -23,13 +27,13 @@ export interface RecommendationDelta {
 }
 
 export interface CrowdPrediction {
-  occupancy: number; // 0 to 100
+  occupancy: number; // 0 to 100 (For road: traffic congestion %)
   severity: CrowdSeverity;
   label: string;
   confidenceScore: number; // e.g. 94%
   confidenceLabel: 'High' | 'Moderate' | 'Provisional';
   estimatedWaitMinutes: number;
-  seatingProbability: number; // 0 to 100
+  seatingProbability: number; // 0 to 100 (For road: on-time reliability %)
   coachBreakdown: CoachBreakdown;
   recommendationDelta?: RecommendationDelta;
 }
@@ -78,10 +82,11 @@ export interface Route {
   operatesFrom: string;
   operatesTo: string;
   carbonSavedKg: number;
+  busNumber?: string;
 }
 
 export interface JourneyStep {
-  type: 'walk' | 'transit' | 'transfer';
+  type: 'walk' | 'transit' | 'transfer' | 'drive' | 'ride';
   instruction: string;
   durationMinutes: number;
   platform?: string;
@@ -89,6 +94,13 @@ export interface JourneyStep {
   mode?: TransportMode;
   occupancy?: number;
   severity?: CrowdSeverity;
+  busNumber?: string;
+  roadName?: string;
+}
+
+export interface BusSeatingInfo {
+  seatsAvailable: number;
+  standingRoom: 'Ample Standing' | 'Limited Standing' | 'Dense Standing' | 'Seats Available';
 }
 
 export interface JourneyOption {
@@ -102,7 +114,7 @@ export interface JourneyOption {
   departureTime: string;
   arrivalTime: string;
   durationMinutes: number;
-  estimatedWaitMinutes: number;
+  estimatedWaitMinutes: number; // Transit platform/stop wait, or Road traffic delay
   prediction: CrowdPrediction;
   transfers: number;
   intermediateStopsCount: number;
@@ -122,6 +134,25 @@ export interface JourneyOption {
   };
   recommendationReason: string;
   isRecommended: boolean;
+
+  // BEST Bus specific fields
+  busNumber?: string;
+  busType?: 'AC Electric' | 'Express AC' | 'Regular Non-AC' | 'Chalo Luxury AC';
+  boardingStop?: string;
+  destinationStop?: string;
+  frequencyText?: string;
+  busSeatingAvailability?: BusSeatingInfo;
+
+  // Road mode specific fields (Car / Bike)
+  isRoadMode?: boolean;
+  trafficCongestion?: number;
+  trafficLevel?: 'Low Traffic' | 'Moderate Flow' | 'Heavy Congestion' | 'Severe Gridlock';
+  activeBottlenecks?: string[];
+  travelReliability?: number;
+  tollCostInr?: number;
+
+  // Exceeds user crowd tolerance flag
+  exceedsCrowdThreshold?: boolean;
 }
 
 export interface SavedRoute {

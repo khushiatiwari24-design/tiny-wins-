@@ -21,6 +21,12 @@ import {
   X,
   Layers,
   ArrowRight,
+  Bus,
+  Bike,
+  Car,
+  AlertTriangle,
+  MapPin,
+  Flame,
 } from 'lucide-react';
 import { MUMBAI_STATIONS } from '../data/routes';
 import { searchAndRankJourneys } from '../services/journeyRanking';
@@ -32,7 +38,7 @@ import { ModeIcon } from '../components/common/ModeIcon';
 import { DemoDataNotice } from '../components/common/DemoDataNotice';
 
 export const JourneyPlannerPage: React.FC = () => {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const settings = getSettings();
 
@@ -125,7 +131,6 @@ export const JourneyPlannerPage: React.FC = () => {
     const isCurrentlySaved = savedRouteIds.includes(pairKey);
 
     if (isCurrentlySaved) {
-      // Find matching saved route ID
       const saved = getSavedRoutes().find((r) => r.originId === originId && r.destinationId === destinationId);
       if (saved) {
         removeSavedRoute(saved.id);
@@ -135,7 +140,7 @@ export const JourneyPlannerPage: React.FC = () => {
     } else {
       addSavedRoute({
         id: `fav-${Date.now()}`,
-        customName: `${journey.origin} ➔ ${journey.destination} (${journey.lineName})`,
+        customName: `${journey.origin} ➔ ${journey.destination} (${journey.name})`,
         originId,
         destinationId,
         preferredMode: journey.mode,
@@ -166,40 +171,42 @@ export const JourneyPlannerPage: React.FC = () => {
     setTimeout(() => setToastMessage(null), 3000);
   };
 
+  const countExceedingTolerance = journeyResults.filter((j) => j.exceedsCrowdThreshold).length;
+
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
       <DemoDataNotice />
 
       {/* Page Title & Context */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white tracking-tight flex items-center gap-2.5">
             <Compass className="w-7 h-7 text-teal-600" />
             <span>Journey Planner</span>
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-            Compare travel corridors, predicted crowd levels, and optimal departure times
+            Compare every travel mode: Fast/Slow/AC Trains, Metro, BEST Buses, Bike, Car, and Multi-modal transfers
           </p>
         </div>
 
         {compareList.length > 0 && (
           <button
             onClick={() => setCompareModalOpen(true)}
-            className="px-3.5 py-1.5 rounded-xl bg-teal-600 text-white text-xs font-bold flex items-center gap-2 shadow-sm animate-bounce"
+            className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold flex items-center justify-center gap-2 shadow-sm animate-bounce self-start sm:self-auto min-h-[40px]"
           >
-            <Layers className="w-3.5 h-3.5" />
+            <Layers className="w-4 h-4" />
             <span>Compare ({compareList.length}) Selected</span>
           </button>
         )}
       </div>
 
       {/* Primary Input Card */}
-      <section className="bg-white dark:bg-slate-900 rounded-2xl p-5 sm:p-6 border border-slate-200/80 dark:border-slate-800 shadow-xs">
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
+      <section className="bg-white dark:bg-slate-900 rounded-2xl p-4 sm:p-6 border border-slate-200/80 dark:border-slate-800 shadow-xs">
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
           {/* Origin Station */}
           <div className="md:col-span-5">
             <label htmlFor="origin-station-select" className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1.5">
-              Origin Station
+              Origin Station / Transit Hub
             </label>
             <select
               id="origin-station-select"
@@ -217,12 +224,12 @@ export const JourneyPlannerPage: React.FC = () => {
           </div>
 
           {/* Quick Swap Button */}
-          <div className="md:col-span-2 flex justify-center pt-2 md:pt-5">
+          <div className="md:col-span-2 flex justify-center py-1 md:py-0 md:pt-5">
             <button
               onClick={handleSwapStations}
               title="Swap origin and destination"
               aria-label="Swap origin and destination"
-              className="p-2.5 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-teal-50 hover:text-teal-600 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-all border border-slate-200 dark:border-slate-700"
+              className="p-3 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-teal-50 hover:text-teal-600 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-all border border-slate-200 dark:border-slate-700 shadow-xs"
             >
               <ArrowRightLeft className="w-4 h-4" />
             </button>
@@ -231,7 +238,7 @@ export const JourneyPlannerPage: React.FC = () => {
           {/* Destination Station */}
           <div className="md:col-span-5">
             <label htmlFor="dest-station-select" className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1.5">
-              Destination Station
+              Destination Station / Terminal
             </label>
             <select
               id="dest-station-select"
@@ -259,8 +266,8 @@ export const JourneyPlannerPage: React.FC = () => {
           </div>
         )}
 
-        {/* Date, Time & Mode Controls */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4 pt-4 border-t border-slate-100 dark:border-slate-800">
+        {/* Responsive 4-Column Controls Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-4 pt-4 border-t border-slate-100 dark:border-slate-800">
           <div>
             <label htmlFor="travel-date-input" className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1.5">
               Travel Date
@@ -272,7 +279,7 @@ export const JourneyPlannerPage: React.FC = () => {
                 type="date"
                 value={departureDate}
                 onChange={(e) => setDepartureDate(e.target.value)}
-                className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 dark:text-slate-200 focus:outline-none"
+                className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 dark:text-slate-200 focus:outline-none min-h-[38px]"
               />
             </div>
           </div>
@@ -287,27 +294,30 @@ export const JourneyPlannerPage: React.FC = () => {
               type="time"
               value={departureTime}
               onChange={(e) => setDepartureTime(e.target.value)}
-              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 dark:text-slate-200 focus:outline-none"
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 dark:text-slate-200 focus:outline-none min-h-[38px]"
             />
           </div>
 
           <div>
             <label htmlFor="transport-mode-select" className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1.5">
-              Transport Mode
+              Transport Mode Filter
             </label>
             <select
               id="transport-mode-select"
               aria-label="Transport mode"
               value={modeFilter}
               onChange={(e) => setModeFilter(e.target.value as any)}
-              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 dark:text-slate-200 focus:outline-none"
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 dark:text-slate-200 focus:outline-none min-h-[38px]"
             >
-              <option value="all">All Modes (Train, Metro, Bus)</option>
+              <option value="all">All Modes (Transit + Road)</option>
               <option value="train_fast">Fast Trains Only</option>
               <option value="train_slow">Slow Trains Only</option>
               <option value="train_ac">AC Trains Only</option>
               <option value="metro">Metro Lines Only</option>
-              <option value="bus_ac">BEST AC Buses</option>
+              <option value="bus">BEST Buses (AC & Non-AC with Bus No.)</option>
+              <option value="bike">Bike / Two-Wheeler</option>
+              <option value="car">Car / Cab</option>
+              <option value="multimodal">Multi-Modal (e.g. Bus + Train / Bike + Metro)</option>
             </select>
           </div>
 
@@ -320,9 +330,9 @@ export const JourneyPlannerPage: React.FC = () => {
               aria-label="Max crowd tolerance"
               value={maxCrowd}
               onChange={(e) => setMaxCrowd(parseInt(e.target.value, 10))}
-              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 dark:text-slate-200 focus:outline-none"
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 dark:text-slate-200 focus:outline-none min-h-[38px]"
             >
-              <option value={100}>Any Crowd Level</option>
+              <option value={100}>Any Crowd Level (Show all)</option>
               <option value={75}>Moderate or Lower (&le; 75%)</option>
               <option value={50}>Low Crowd Only (&le; 50%)</option>
             </select>
@@ -330,19 +340,20 @@ export const JourneyPlannerPage: React.FC = () => {
         </div>
 
         {/* Quick Time Presets & Accessibility Toggle */}
-        <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-slate-400 font-medium mr-1">Time presets:</span>
+        <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar whitespace-nowrap pb-1 -mx-1 px-1">
+            <span className="text-slate-400 font-medium mr-1 shrink-0">Time presets:</span>
             {[
               { label: 'Morning Peak (08:45)', time: '08:45' },
               { label: 'Mid-Day (12:30)', time: '12:30' },
               { label: 'Evening Peak (18:30)', time: '18:30' },
               { label: 'Night (21:30)', time: '21:30' },
+              { label: 'Late Night (22:45)', time: '22:45' },
             ].map((p) => (
               <button
                 key={p.time}
                 onClick={() => setDepartureTime(p.time)}
-                className={`px-2.5 py-1 rounded-md transition-colors ${
+                className={`px-3 py-1.5 rounded-lg shrink-0 transition-colors ${
                   departureTime === p.time
                     ? 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 font-bold'
                     : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200'
@@ -353,7 +364,7 @@ export const JourneyPlannerPage: React.FC = () => {
             ))}
           </div>
 
-          <label className="flex items-center gap-2 cursor-pointer select-none">
+          <label className="flex items-center gap-2 cursor-pointer select-none shrink-0 pt-1 md:pt-0">
             <input
               type="checkbox"
               checked={accessibilityPriority}
@@ -362,19 +373,19 @@ export const JourneyPlannerPage: React.FC = () => {
             />
             <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1">
               <Accessibility className="w-3.5 h-3.5 text-teal-600" />
-              <span>Prioritize Step-Free / Wheelchair Accessibility</span>
+              <span>Prioritize Step-Free Access</span>
             </span>
           </label>
         </div>
       </section>
 
-      {/* Ranking Strategy Selector */}
-      <section className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
-            Rank journeys by:
+      {/* Ranking Strategy Selector & Crowd Tolerance Notice */}
+      <section className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar whitespace-nowrap pb-1">
+          <span className="text-xs font-bold uppercase tracking-wider text-slate-400 shrink-0">
+            Rank by:
           </span>
-          <div className="inline-flex p-1 bg-slate-200/80 dark:bg-slate-800 rounded-xl text-xs font-semibold">
+          <div className="inline-flex p-1 bg-slate-200/80 dark:bg-slate-800 rounded-xl text-xs font-semibold shrink-0">
             {[
               { label: 'Balanced', value: 'balanced' },
               { label: 'Least Crowded', value: 'least_crowded' },
@@ -396,8 +407,15 @@ export const JourneyPlannerPage: React.FC = () => {
           </div>
         </div>
 
-        <div className="text-xs text-slate-500">
-          Showing <strong>{journeyResults.length}</strong> viable departure options
+        <div className="flex items-center gap-2 text-xs text-slate-500">
+          <span>
+            Showing <strong>{journeyResults.length}</strong> viable options across modes
+          </span>
+          {maxCrowd < 100 && countExceedingTolerance > 0 && (
+            <span className="px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 font-medium text-[11px] border border-amber-200 dark:border-amber-800">
+              {countExceedingTolerance} exceed {maxCrowd}% threshold
+            </span>
+          )}
         </div>
       </section>
 
@@ -408,7 +426,7 @@ export const JourneyPlannerPage: React.FC = () => {
             <AlertCircle className="w-8 h-8 text-slate-400 mx-auto mb-2" />
             <h3 className="font-bold text-slate-900 dark:text-white">No Direct Options Matching Filter</h3>
             <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
-              Try adjusting your max crowd tolerance or selecting "All Modes" to view multimodal transfer options.
+              Try selecting "All Modes" to view every train, metro, bus, road, and multimodal connection.
             </p>
           </div>
         ) : (
@@ -424,29 +442,56 @@ export const JourneyPlannerPage: React.FC = () => {
                 className={`bg-white dark:bg-slate-900 rounded-2xl border transition-all shadow-xs ${
                   journey.isRecommended
                     ? 'border-teal-400/80 dark:border-teal-600/80 ring-1 ring-teal-500/20'
+                    : journey.exceedsCrowdThreshold
+                    ? 'border-amber-200/80 dark:border-amber-900/60'
                     : 'border-slate-200/80 dark:border-slate-800 hover:border-slate-300'
                 }`}
               >
                 {/* Recommended Tag */}
                 {journey.isRecommended && (
-                  <div className="bg-teal-600 text-white text-[10px] font-bold uppercase tracking-wider px-4 py-1 rounded-t-xl flex items-center justify-between">
+                  <div className="bg-teal-600 text-white text-[10px] font-bold uppercase tracking-wider px-4 py-1.5 rounded-t-xl flex flex-wrap items-center justify-between gap-2">
                     <span className="flex items-center gap-1.5">
-                      <Sparkles className="w-3 h-3" />
+                      <Sparkles className="w-3.5 h-3.5" />
                       <span>Recommended Best Choice • {journey.recommendationReason}</span>
                     </span>
                     <span>Score: {journey.rankingScore.overallScore}/100</span>
                   </div>
                 )}
 
-                <div className="p-5">
+                {/* Exceeds Tolerance Warning Banner if applicable */}
+                {!journey.isRecommended && journey.exceedsCrowdThreshold && (
+                  <div className="bg-amber-500/10 text-amber-800 dark:text-amber-300 text-[10px] font-semibold px-4 py-1 rounded-t-xl border-b border-amber-200/40 dark:border-amber-800/40 flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <AlertTriangle className="w-3 h-3 text-amber-600" />
+                      <span>
+                        Exceeds your {maxCrowd}% crowd preference ({journey.prediction.occupancy}% predicted {journey.isRoadMode ? 'traffic' : 'crowd'})
+                      </span>
+                    </span>
+                    <span>Ranked lower for comparison</span>
+                  </div>
+                )}
+
+                <div className="p-4 sm:p-5">
                   <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                     {/* Mode & Timing info */}
-                    <div className="space-y-1.5">
+                    <div className="space-y-1.5 min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
-                        <ModeIcon mode={journey.mode} showLabel={true} />
-                        <span className="font-bold text-base text-slate-900 dark:text-white">
+                        <ModeIcon
+                          mode={journey.mode}
+                          showLabel={true}
+                          busNumber={journey.busNumber}
+                        />
+
+                        {journey.isRoadMode && (
+                          <span className="text-[11px] px-2 py-0.5 rounded-md bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 font-semibold border border-purple-200/60">
+                            Road Corridor
+                          </span>
+                        )}
+
+                        <span className="font-bold text-sm sm:text-base text-slate-900 dark:text-white truncate">
                           {journey.name}
                         </span>
+
                         {journey.transfers > 0 ? (
                           <span className="text-[11px] px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 font-medium">
                             {journey.transfers} transfer
@@ -456,15 +501,52 @@ export const JourneyPlannerPage: React.FC = () => {
                             Direct service
                           </span>
                         )}
+
+                        {journey.tollCostInr ? (
+                          <span className="text-[11px] px-2 py-0.5 rounded bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 font-medium">
+                            ₹{journey.tollCostInr} Toll
+                          </span>
+                        ) : null}
                       </div>
 
-                      {/* Timeline summary */}
-                      <div className="flex items-center gap-3 text-xs sm:text-sm text-slate-700 dark:text-slate-300 pt-1">
-                        <div className="flex items-center gap-1.5 font-bold">
-                          <Clock className="w-3.5 h-3.5 text-slate-400" />
+                      {/* Bus specific stop details pill */}
+                      {journey.busNumber && journey.boardingStop && (
+                        <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-600 dark:text-slate-400 bg-orange-50/50 dark:bg-orange-950/20 px-2.5 py-1 rounded-lg border border-orange-200/40 dark:border-orange-900/30">
+                          <span className="font-semibold text-orange-800 dark:text-orange-300">
+                            Board: {journey.boardingStop}
+                          </span>
+                          <span>➔</span>
+                          <span className="font-semibold text-orange-800 dark:text-orange-300">
+                            Drop: {journey.destinationStop}
+                          </span>
+                          <span>•</span>
+                          <span className="text-slate-500">{journey.frequencyText}</span>
+                        </div>
+                      )}
+
+                      {/* Road mode active bottleneck pills */}
+                      {journey.isRoadMode && journey.activeBottlenecks && journey.activeBottlenecks.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
+                          <span className="font-medium text-amber-700 dark:text-amber-400">Live Traffic Watch:</span>
+                          {journey.activeBottlenecks.map((b, bIdx) => (
+                            <span
+                              key={bIdx}
+                              className="px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-mono text-[10px]"
+                            >
+                              {b}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Timeline summary: Departure -> Arrival (ETA), Duration, Wait */}
+                      <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs sm:text-sm text-slate-700 dark:text-slate-300 pt-1">
+                        <div className="flex items-center gap-1.5 font-bold text-slate-900 dark:text-white">
+                          <Clock className="w-3.5 h-3.5 text-teal-600 shrink-0" />
                           <span>{journey.departureTime}</span>
                           <span className="text-slate-400 font-normal">→</span>
-                          <span>{journey.arrivalTime}</span>
+                          <span className="text-teal-700 dark:text-teal-300">{journey.arrivalTime}</span>
+                          <span className="text-[11px] text-slate-400 font-normal">(ETA)</span>
                         </div>
                         <span className="text-slate-300 dark:text-slate-700">|</span>
                         <span className="font-semibold text-slate-900 dark:text-white">
@@ -472,29 +554,44 @@ export const JourneyPlannerPage: React.FC = () => {
                         </span>
                         <span className="text-slate-300 dark:text-slate-700">|</span>
                         <span className="text-slate-500 text-xs">
-                          ~{journey.estimatedWaitMinutes}m platform wait
+                          {journey.isRoadMode
+                            ? `+${journey.estimatedWaitMinutes}m traffic delay`
+                            : journey.busNumber
+                            ? `~${journey.estimatedWaitMinutes}m stop wait (${journey.busNumber})`
+                            : `~${journey.estimatedWaitMinutes}m platform wait`}
                         </span>
                       </div>
                     </div>
 
-                    {/* Crowd Severity & Quick Action Buttons */}
-                    <div className="flex flex-wrap items-center gap-3">
-                      <div className="text-right">
+                    {/* Crowd / Traffic Severity & Quick Actions */}
+                    <div className="flex flex-wrap items-center justify-between lg:justify-end gap-3 pt-2 lg:pt-0 border-t border-slate-100 dark:border-slate-800 lg:border-t-0">
+                      <div className="text-left lg:text-right">
                         <CrowdBadge
                           occupancy={journey.prediction.occupancy}
                           severity={journey.prediction.severity}
                           size="md"
+                          isRoadMode={journey.isRoadMode}
                         />
-                        <div className="text-[11px] text-slate-400 mt-1">
-                          {journey.prediction.seatingProbability}% seat likelihood
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+                          {journey.isRoadMode ? (
+                            <span>{journey.travelReliability || 88}% On-Time Reliability</span>
+                          ) : journey.busSeatingAvailability ? (
+                            <span className="font-medium text-emerald-600 dark:text-emerald-400">
+                              {journey.busSeatingAvailability.seatsAvailable > 0
+                                ? `${journey.busSeatingAvailability.seatsAvailable} seats available`
+                                : journey.busSeatingAvailability.standingRoom}
+                            </span>
+                          ) : (
+                            <span>{journey.prediction.seatingProbability}% seat likelihood</span>
+                          )}
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-1.5 border-l border-slate-200 dark:border-slate-800 pl-3">
+                      <div className="flex items-center gap-1.5 sm:border-l sm:border-slate-200 dark:sm:border-slate-800 sm:pl-3">
                         <button
                           onClick={() => handleSaveRoute(journey)}
                           title={isSaved ? 'Remove from Saved' : 'Save this route'}
-                          className={`p-2 rounded-xl border text-xs transition-colors ${
+                          className={`p-2 rounded-xl border text-xs transition-colors min-h-[38px] min-w-[38px] flex items-center justify-center ${
                             isSaved
                               ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-600 border-amber-200 dark:border-amber-800'
                               : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-slate-900 border-slate-200 dark:border-slate-700'
@@ -506,7 +603,7 @@ export const JourneyPlannerPage: React.FC = () => {
                         <button
                           onClick={() => toggleCompare(journey)}
                           title="Compare with other options"
-                          className={`p-2 rounded-xl border text-xs transition-colors ${
+                          className={`p-2 rounded-xl border text-xs transition-colors min-h-[38px] min-w-[38px] flex items-center justify-center ${
                             isCompared
                               ? 'bg-teal-50 dark:bg-teal-950/40 text-teal-600 border-teal-300'
                               : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-slate-900 border-slate-200 dark:border-slate-700'
@@ -520,7 +617,7 @@ export const JourneyPlannerPage: React.FC = () => {
                             navigate(`/forecast?route=${journey.routeId.split('+')[0]}&time=${journey.departureTime}`)
                           }
                           title="View 24h crowd forecast"
-                          className="px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold transition-colors flex items-center gap-1"
+                          className="px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold transition-colors flex items-center gap-1 min-h-[38px]"
                         >
                           <TrendingUp className="w-3.5 h-3.5" />
                           <span className="hidden sm:inline">Forecast</span>
@@ -528,7 +625,7 @@ export const JourneyPlannerPage: React.FC = () => {
 
                         <button
                           onClick={() => setExpandedJourneyId(isExpanded ? null : journey.id)}
-                          className="px-3 py-2 rounded-xl bg-teal-50 dark:bg-teal-950/40 hover:bg-teal-100 text-teal-700 dark:text-teal-300 text-xs font-bold transition-colors flex items-center gap-1"
+                          className="px-3 py-2 rounded-xl bg-teal-50 dark:bg-teal-950/40 hover:bg-teal-100 text-teal-700 dark:text-teal-300 text-xs font-bold transition-colors flex items-center gap-1 min-h-[38px]"
                         >
                           <span>{isExpanded ? 'Hide' : 'Details'}</span>
                           {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
@@ -537,12 +634,13 @@ export const JourneyPlannerPage: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Occupancy bar */}
+                  {/* Occupancy / Congestion progress bar */}
                   <div className="mt-3">
                     <OccupancyBar
                       occupancy={journey.prediction.occupancy}
                       severity={journey.prediction.severity}
                       height="h-1.5"
+                      isRoadMode={journey.isRoadMode}
                     />
                   </div>
 
@@ -563,7 +661,9 @@ export const JourneyPlannerPage: React.FC = () => {
 
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
                           <div className="bg-white dark:bg-slate-800 p-2 rounded-lg border border-slate-200/60 dark:border-slate-700">
-                            <div className="text-slate-400 text-[10px]">Crowd Score (35%)</div>
+                            <div className="text-slate-400 text-[10px]">
+                              {journey.isRoadMode ? 'Traffic Score (35%)' : 'Crowd Score (35%)'}
+                            </div>
                             <div className="font-bold text-slate-800 dark:text-slate-200">
                               {journey.rankingScore.crowdScore}/100
                             </div>
@@ -593,28 +693,64 @@ export const JourneyPlannerPage: React.FC = () => {
                         </p>
                       </div>
 
-                      {/* Coach breakdown for commuters */}
-                      <div className="p-3 bg-teal-50/50 dark:bg-teal-950/20 rounded-xl border border-teal-100 dark:border-teal-900 text-xs">
-                        <span className="font-semibold text-teal-800 dark:text-teal-300 block mb-1.5">
-                          Coach-Specific Crowd Estimate:
-                        </span>
-                        <div className="flex flex-wrap gap-4 text-slate-700 dark:text-slate-300">
-                          <div>
-                            General Class: <strong>{journey.prediction.coachBreakdown.general}%</strong>
-                          </div>
-                          <div>
-                            First Class: <strong>{journey.prediction.coachBreakdown.firstClass}%</strong>
-                          </div>
-                          <div>
-                            Ladies Coach: <strong>{journey.prediction.coachBreakdown.ladies}%</strong>
-                          </div>
-                          {journey.prediction.coachBreakdown.acCoach && (
+                      {/* Detailed Mode-Specific Insight Card */}
+                      {journey.busNumber ? (
+                        <div className="p-3 bg-orange-50/50 dark:bg-orange-950/20 rounded-xl border border-orange-200/60 dark:border-orange-900/60 text-xs">
+                          <span className="font-semibold text-orange-900 dark:text-orange-300 block mb-1">
+                            BEST Bus Line Specification:
+                          </span>
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-slate-700 dark:text-slate-300">
                             <div>
-                              AC Coach: <strong>{journey.prediction.coachBreakdown.acCoach}%</strong>
+                              Bus Route: <strong>{journey.busNumber} ({journey.busType})</strong>
                             </div>
-                          )}
+                            <div>
+                              Frequency: <strong>{journey.frequencyText}</strong>
+                            </div>
+                            <div>
+                              Availability: <strong>{journey.busSeatingAvailability?.seatsAvailable ? `${journey.busSeatingAvailability.seatsAvailable} seats open` : 'Standing room available'}</strong>
+                            </div>
+                          </div>
                         </div>
-                      </div>
+                      ) : journey.isRoadMode ? (
+                        <div className="p-3 bg-purple-50/50 dark:bg-purple-950/20 rounded-xl border border-purple-200/60 dark:border-purple-900/60 text-xs">
+                          <span className="font-semibold text-purple-900 dark:text-purple-300 block mb-1">
+                            Road Traffic & Bottleneck Intelligence:
+                          </span>
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-slate-700 dark:text-slate-300">
+                            <div>
+                              Traffic Level: <strong>{journey.trafficLevel} ({journey.trafficCongestion}% volume)</strong>
+                            </div>
+                            <div>
+                              On-Time Reliability: <strong>{journey.travelReliability}%</strong>
+                            </div>
+                            <div>
+                              Buffer delay: <strong>+{journey.estimatedWaitMinutes}m signal/flyover wait</strong>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="p-3 bg-teal-50/50 dark:bg-teal-950/20 rounded-xl border border-teal-100 dark:border-teal-900 text-xs">
+                          <span className="font-semibold text-teal-800 dark:text-teal-300 block mb-1.5">
+                            Coach-Specific Crowd Estimate:
+                          </span>
+                          <div className="flex flex-wrap gap-4 text-slate-700 dark:text-slate-300">
+                            <div>
+                              General Class: <strong>{journey.prediction.coachBreakdown.general}%</strong>
+                            </div>
+                            <div>
+                              First Class: <strong>{journey.prediction.coachBreakdown.firstClass}%</strong>
+                            </div>
+                            <div>
+                              Ladies Coach: <strong>{journey.prediction.coachBreakdown.ladies}%</strong>
+                            </div>
+                            {journey.prediction.coachBreakdown.acCoach && (
+                              <div>
+                                AC Coach: <strong>{journey.prediction.coachBreakdown.acCoach}%</strong>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
 
                       {/* Step-by-step route itinerary */}
                       <div className="space-y-2">
@@ -630,7 +766,9 @@ export const JourneyPlannerPage: React.FC = () => {
                               </div>
                               <div className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5">
                                 <span>Duration: {step.durationMinutes} mins</span>
-                                {step.occupancy && <span>• Crowd load: {step.occupancy}%</span>}
+                                {step.occupancy ? (
+                                  <span>• {journey.isRoadMode ? 'Traffic' : 'Crowd load'}: {step.occupancy}%</span>
+                                ) : null}
                               </div>
                             </div>
                           ))}
@@ -647,8 +785,8 @@ export const JourneyPlannerPage: React.FC = () => {
 
       {/* Side-by-Side Journey Comparison Modal */}
       {compareModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
-          <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-4xl w-full p-6 shadow-2xl border border-slate-200 dark:border-slate-800 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-4xl w-full p-4 sm:p-6 shadow-2xl border border-slate-200 dark:border-slate-800 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800">
               <div>
                 <h3 className="font-bold text-lg text-slate-900 dark:text-white flex items-center gap-2">
@@ -656,7 +794,7 @@ export const JourneyPlannerPage: React.FC = () => {
                   <span>Side-by-Side Journey Comparison</span>
                 </h3>
                 <p className="text-xs text-slate-500">
-                  Comparing {compareList.length} candidate options for your commute
+                  Comparing {compareList.length} candidate options across transport modes
                 </p>
               </div>
               <button
@@ -675,7 +813,7 @@ export const JourneyPlannerPage: React.FC = () => {
                 >
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <ModeIcon mode={j.mode} showLabel={true} />
+                      <ModeIcon mode={j.mode} showLabel={true} busNumber={j.busNumber} />
                       <button
                         onClick={() => toggleCompare(j)}
                         className="text-xs text-rose-500 hover:underline"
@@ -700,16 +838,31 @@ export const JourneyPlannerPage: React.FC = () => {
                         <span className="font-semibold">{j.durationMinutes} mins</span>
                       </div>
                       <div className="pt-2 flex justify-between items-center">
-                        <span className="text-slate-500">Crowd Load:</span>
-                        <CrowdBadge occupancy={j.prediction.occupancy} severity={j.prediction.severity} size="sm" />
+                        <span className="text-slate-500">
+                          {j.isRoadMode ? 'Traffic Congestion:' : 'Crowd Load:'}
+                        </span>
+                        <CrowdBadge
+                          occupancy={j.prediction.occupancy}
+                          severity={j.prediction.severity}
+                          size="sm"
+                          isRoadMode={j.isRoadMode}
+                        />
                       </div>
                       <div className="pt-2 flex justify-between">
-                        <span className="text-slate-500">Platform Wait:</span>
-                        <span className="font-semibold">~{j.estimatedWaitMinutes} mins</span>
+                        <span className="text-slate-500">
+                          {j.isRoadMode ? 'Traffic Delay Buffer:' : 'Wait Time:'}
+                        </span>
+                        <span className="font-semibold">
+                          {j.isRoadMode ? `+${j.estimatedWaitMinutes}m delay` : `~${j.estimatedWaitMinutes} mins`}
+                        </span>
                       </div>
                       <div className="pt-2 flex justify-between">
-                        <span className="text-slate-500">Seating Chance:</span>
-                        <span className="font-semibold">{j.prediction.seatingProbability}%</span>
+                        <span className="text-slate-500">
+                          {j.isRoadMode ? 'Reliability:' : 'Seating Chance:'}
+                        </span>
+                        <span className="font-semibold">
+                          {j.isRoadMode ? `${j.travelReliability}% on-time` : `${j.prediction.seatingProbability}%`}
+                        </span>
                       </div>
                       <div className="pt-2 flex justify-between">
                         <span className="text-slate-500">Step-free:</span>
@@ -725,7 +878,7 @@ export const JourneyPlannerPage: React.FC = () => {
                       setCompareModalOpen(false);
                       navigate(`/forecast?route=${j.routeId.split('+')[0]}&time=${j.departureTime}`);
                     }}
-                    className="mt-4 w-full py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-bold transition-colors"
+                    className="mt-4 w-full py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-bold transition-colors min-h-[38px]"
                   >
                     Select this option
                   </button>
