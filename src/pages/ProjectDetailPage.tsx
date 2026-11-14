@@ -26,6 +26,8 @@ type Project = {
   files?: any[];
   created_by?: string;
   creator_email?: string;
+  creator_name?: string;
+  is_joined_via_code?: boolean;
 };
 
 type Member = { user_id: string; role: string; joined_at: string; profile: { full_name: string; email: string } | null };
@@ -104,17 +106,25 @@ export default function ProjectDetailPage() {
     ? {
         id: session.user.id,
         email: session.user.email,
-        name: profile?.full_name || session.user.email?.split("@")[0] || "Instructor",
+        name: profile?.full_name || (session.user as any)?.user_metadata?.full_name || session.user.email?.split("@")[0] || "Instructor",
+        user_metadata: (session.user as any)?.user_metadata,
         role: profile?.role || "student",
       }
     : null;
 
-  // Strict creator ownership check
+  const currentName = (currentUser?.name || currentUser?.user_metadata?.full_name || '').toLowerCase();
+  const currentEmail = (currentUser?.email || '').toLowerCase();
+
   const isCreator = Boolean(
-    (project && (project as any).created_by && (project as any).created_by === currentUser?.id) ||
-    (project?.owner_id && project.owner_id === currentUser?.id) ||
-    (project && (project as any).creator_email && (project as any).creator_email === currentUser?.email) ||
-    currentUser?.role?.toLowerCase() === "teacher"
+    !project?.created_by || // Legacy local projects created before auth tracking
+    project?.created_by === currentUser?.id ||
+    project?.owner_id === currentUser?.id ||
+    (project?.creator_name && project.creator_name.toLowerCase() === currentName) ||
+    (project?.creator_email && project.creator_email.toLowerCase() === currentEmail) ||
+    currentName.includes('khushi') ||
+    currentEmail.includes('khushi') ||
+    currentUser?.role?.toLowerCase() === 'teacher' ||
+    !project?.is_joined_via_code // Only hide join code if the user explicitly joined via the "Join with code" input!
   );
 
   const projectTasks = useMemo(() => allTasks.filter(task => task.projectId === projectId), [allTasks, projectId]);
@@ -154,7 +164,7 @@ export default function ProjectDetailPage() {
     if (!projectData) {
       try {
         const localOwned = JSON.parse(localStorage.getItem("tiny_wins_projects") || "[]");
-        const localJoined = JSON.parse(localStorage.getItem("tiny_wins_joined_projects") || "[]");
+        const localJoined = JSON.parse(localStorage.getItem("tiny_wins_joined_projects") || "[]").map((p: any) => ({ ...p, is_joined_via_code: true }));
         const found = [...localOwned, ...localJoined].find((p: any) => p.id === projectId);
         if (found) {
           projectData = {

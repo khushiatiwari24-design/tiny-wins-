@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { Task, TaskInput } from "../types/task";
 
-const STORAGE_KEY = "tiny-wins-tasks";
+const STORAGE_KEY = "tiny_wins_tasks";
 
 const getTodayDate = () => {
   const now = new Date();
@@ -88,7 +88,7 @@ const readTasksFromStorage = (): Task[] | null => {
     return null;
   }
 
-  const raw = localStorage.getItem(STORAGE_KEY);
+  const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem("tiny-wins-tasks");
 
   if (!raw) {
     return null;

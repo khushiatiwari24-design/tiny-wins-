@@ -1,287 +1,239 @@
-import React, { useState } from 'react';
-import {
-  Settings as SettingsIcon,
-  Moon,
-  Sun,
-  CloudRain,
-  Sliders,
-  CheckCircle2,
-  Trash2,
-  RefreshCw,
-  Shield,
-  Smartphone,
-  Eye,
-} from 'lucide-react';
-import { getSettings, saveSettings, saveSavedRoutes, saveNotifications, DEFAULT_SETTINGS } from '../services/storage';
-import { INITIAL_SAVED_ROUTES, DEMO_NOTIFICATIONS } from '../data/demoData';
-import { DemoDataNotice } from '../components/common/DemoDataNotice';
-import { UserSettings, TransportMode } from '../types';
+import { useState, useEffect } from "react";
+import { useAuth } from "../context/AuthContext";
+import { UserCheck, ShieldCheck, CheckCircle2, AlertCircle, Sparkles, LogOut, Save } from "lucide-react";
 
-export const SettingsPage: React.FC = () => {
-  const [settings, setSettingsState] = useState<UserSettings>(getSettings());
-  const [saveToast, setSaveToast] = useState<string | null>(null);
+export default function SettingsPage() {
+  const { profile, session, updateProfile, signOut } = useAuth();
 
-  const updateSetting = <K extends keyof UserSettings>(key: K, value: UserSettings[K]) => {
-    const updated = { ...settings, [key]: value };
-    setSettingsState(updated);
-    saveSettings(updated);
-
-    if (key === 'theme') {
-      if (value === 'dark') {
-        document.documentElement.classList.add('dark');
-      } else {
-        document.documentElement.classList.remove('dark');
+  // Helper to extract the most accurate existing name so input is never blank
+  const getInitialName = () => {
+    if (profile?.full_name && profile.full_name !== "User" && profile.full_name !== "Tiny Wins user") {
+      return profile.full_name;
+    }
+    const metaName = session?.user?.user_metadata?.full_name || session?.user?.user_metadata?.name;
+    if (metaName) return metaName;
+    try {
+      const saved = localStorage.getItem("tiny_wins_user");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.name) return parsed.name;
       }
+    } catch {}
+    if (session?.user?.email) {
+      return session.user.email.split("@")[0];
+    }
+    return "Khushi Tiwari";
+  };
+
+  const getInitialRole = (): "student" | "teacher" => {
+    const rawRole = profile?.role || session?.user?.user_metadata?.role;
+    if (rawRole?.toString().toLowerCase() === "teacher") return "teacher";
+    try {
+      const saved = localStorage.getItem("tiny_wins_user");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.role?.toString().toLowerCase() === "teacher") return "teacher";
+      }
+    } catch {}
+    return "student";
+  };
+
+  const [name, setName] = useState(getInitialName);
+  const [role, setRole] = useState<"student" | "teacher">(getInitialRole);
+  const [message, setMessage] = useState<{ text: string; isError?: boolean } | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  // Sync if profile or session resolves asynchronously
+  useEffect(() => {
+    if (profile?.full_name && profile.full_name !== "User" && !name) {
+      setName(profile.full_name);
+    }
+    if (profile?.role) {
+      setRole(profile.role.toLowerCase() === "teacher" ? "teacher" : "student");
+    }
+  }, [profile]);
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) {
+      setMessage({ text: "Please enter your full name.", isError: true });
+      return;
     }
 
-    triggerToast('Preferences saved successfully');
-  };
+    setSaving(true);
+    setMessage(null);
 
-  const triggerToast = (msg: string) => {
-    setSaveToast(msg);
-    setTimeout(() => setSaveToast(null), 2500);
-  };
+    const roleCapitalized = role === "teacher" ? "Teacher" : "Student";
 
-  const handleResetData = () => {
-    if (window.confirm('Reset all saved routes, recent searches, and demo preferences to default?')) {
-      saveSavedRoutes(INITIAL_SAVED_ROUTES);
-      saveNotifications(DEMO_NOTIFICATIONS);
-      saveSettings(DEFAULT_SETTINGS);
-      setSettingsState(DEFAULT_SETTINGS);
-      document.documentElement.classList.remove('dark');
-      triggerToast('All data reset to initial demo defaults');
+    try {
+      await updateProfile({
+        full_name: name.trim(),
+        role,
+      });
+
+      setSaving(false);
+      setMessage({
+        text: `✅ Profile & Role updated to ${roleCapitalized}!`,
+        isError: false,
+      });
+
+      // Clear success banner after 4 seconds
+      window.setTimeout(() => {
+        setMessage((prev) => (prev?.isError ? prev : null));
+      }, 4000);
+    } catch (err: any) {
+      setSaving(false);
+      setMessage({
+        text: err?.message || "Failed to update profile. Please try again.",
+        isError: true,
+      });
     }
   };
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-300 max-w-4xl">
-      <DemoDataNotice />
-
-      {/* Header */}
+    <section className="p-3.5 sm:p-5 lg:p-8 max-w-4xl">
       <div>
-        <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white tracking-tight flex items-center gap-2.5">
-          <SettingsIcon className="w-7 h-7 text-teal-600" />
-          <span>Commuter Settings & Simulation Controls</span>
+        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white flex items-center gap-2.5">
+          <span>Settings</span>
+          <span className="rounded-full bg-violet-500/15 border border-violet-500/30 px-2.5 py-0.5 text-xs font-medium text-violet-300">
+            Account & Role
+          </span>
         </h1>
-        <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-          Customize crowd tolerance thresholds, transit preferences, and simulated weather conditions
+        <p className="mt-1 text-xs sm:text-sm text-slate-400">
+          Manage your personal profile, teacher/student role, and workspace preferences.
         </p>
       </div>
 
-      {/* Visual & Interface Theme */}
-      <section className="bg-white dark:bg-slate-900 rounded-2xl p-6 border border-slate-200/80 dark:border-slate-800 shadow-xs space-y-5">
-        <h2 className="font-bold text-base text-slate-900 dark:text-white pb-3 border-b border-slate-100 dark:border-slate-800">
-          Interface Appearance
-        </h2>
-
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <div className="font-semibold text-xs sm:text-sm text-slate-800 dark:text-slate-200">
-              Color Theme
-            </div>
-            <div className="text-xs text-slate-500 dark:text-slate-400">
-              Default is clean Light SaaS theme with high-contrast accessibility
-            </div>
-          </div>
-
-          <div className="inline-flex p-1 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-semibold">
-            <button
-              onClick={() => updateSetting('theme', 'light')}
-              className={`px-4 py-2 rounded-lg flex items-center gap-2 transition-all ${
-                settings.theme === 'light'
-                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-xs font-bold'
-                  : 'text-slate-500'
-              }`}
-            >
-              <Sun className="w-4 h-4 text-amber-500" />
-              <span>Light Theme</span>
-            </button>
-            <button
-              onClick={() => updateSetting('theme', 'dark')}
-              className={`px-4 py-2 rounded-lg flex items-center gap-2 transition-all ${
-                settings.theme === 'dark'
-                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-xs font-bold'
-                  : 'text-slate-500'
-              }`}
-            >
-              <Moon className="w-4 h-4 text-blue-400" />
-              <span>Dark Theme</span>
-            </button>
-          </div>
-        </div>
-      </section>
-
-      {/* Simulation & Environmental Modifiers */}
-      <section className="bg-white dark:bg-slate-900 rounded-2xl p-6 border border-slate-200/80 dark:border-slate-800 shadow-xs space-y-5">
-        <div className="flex items-center gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
-          <CloudRain className="w-5 h-5 text-teal-600" />
-          <h2 className="font-bold text-base text-slate-900 dark:text-white">
-            Monsoon & Weather Impact Simulator
-          </h2>
+      <form
+        onSubmit={save}
+        className="mt-6 rounded-2xl border border-white/10 bg-white/[.025] p-5 sm:p-7 shadow-xl shadow-black/40 backdrop-blur-xl"
+      >
+        <div className="flex items-center gap-2 pb-4 border-b border-white/5">
+          <Sparkles className="text-violet-400" size={18} />
+          <h2 className="font-semibold text-white text-base">Your Profile</h2>
         </div>
 
-        <div>
-          <div className="font-semibold text-xs sm:text-sm text-slate-800 dark:text-slate-200 mb-1">
-            Weather Severity Multiplier
-          </div>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
-            Simulates how Mumbai rainfall triggers suburban train slow-zones and redirects passengers to Metro and AC buses.
-          </p>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            {[
-              {
-                id: 'normal',
-                label: 'Normal Conditions',
-                desc: 'Standard timetable and historical passenger density',
-              },
-              {
-                id: 'light_rain',
-                label: 'Light Monsoon Drizzle',
-                desc: '+10% demand surge & minor road traffic delays',
-              },
-              {
-                id: 'heavy_rain',
-                label: 'Heavy Waterlogging Surge',
-                desc: '+28% Metro shift, heavy crowding on elevated lines',
-              },
-            ].map((w) => (
-              <button
-                key={w.id}
-                onClick={() => updateSetting('monsoonMultiplier', w.id as any)}
-                className={`p-4 rounded-xl border text-left transition-all ${
-                  settings.monsoonMultiplier === w.id
-                    ? 'border-teal-500 bg-teal-50/60 dark:bg-teal-950/40 text-teal-900 dark:text-teal-200 ring-1 ring-teal-500'
-                    : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 hover:border-slate-300'
-                }`}
-              >
-                <div className="font-bold text-xs">{w.label}</div>
-                <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 leading-normal">
-                  {w.desc}
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* Commuter Threshold Preferences */}
-      <section className="bg-white dark:bg-slate-900 rounded-2xl p-6 border border-slate-200/80 dark:border-slate-800 shadow-xs space-y-5">
-        <h2 className="font-bold text-base text-slate-900 dark:text-white pb-3 border-b border-slate-100 dark:border-slate-800">
-          Commute Planning Thresholds
-        </h2>
-
-        {/* Max crowd threshold slider */}
-        <div>
-          <div className="flex justify-between items-center mb-1">
-            <span className="font-semibold text-xs sm:text-sm text-slate-800 dark:text-slate-200">
-              Maximum Acceptable Crowd Tolerance
-            </span>
-            <span className="font-bold text-teal-600 dark:text-teal-400 text-sm">
-              {settings.maxCrowdThreshold}%
-            </span>
-          </div>
-          <p className="text-xs text-slate-500 mb-2">
-            Journeys predicted above this occupancy will trigger warning badges in results.
-          </p>
-          <input
-            type="range"
-            min={40}
-            max={95}
-            step={5}
-            value={settings.maxCrowdThreshold}
-            onChange={(e) => updateSetting('maxCrowdThreshold', parseInt(e.target.value, 10))}
-            className="w-full accent-teal-600"
-          />
-          <div className="flex justify-between text-[11px] text-slate-400 mt-1">
-            <span>40% (Seats guaranteed)</span>
-            <span>70% (Standing room)</span>
-            <span>95% (Dense crush)</span>
-          </div>
-        </div>
-
-        {/* Walking speed preference */}
-        <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <div className="font-semibold text-xs sm:text-sm text-slate-800 dark:text-slate-200">
-              Walking Speed during Station Interchange
-            </div>
-            <div className="text-xs text-slate-500">
-              Affects estimated transfer time when switching between lines at Dadar or Andheri
-            </div>
-          </div>
-
-          <div className="inline-flex p-1 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-semibold">
-            {[
-              { id: 'slow', label: 'Relaxed (3 km/h)' },
-              { id: 'moderate', label: 'Normal (4.5 km/h)' },
-              { id: 'brisk', label: 'Brisk (6 km/h)' },
-            ].map((s) => (
-              <button
-                key={s.id}
-                onClick={() => updateSetting('walkingSpeed', s.id as any)}
-                className={`px-3 py-1.5 rounded-lg transition-all ${
-                  settings.walkingSpeed === s.id
-                    ? 'bg-white dark:bg-slate-700 text-teal-700 dark:text-teal-400 font-bold shadow-xs'
-                    : 'text-slate-500'
-                }`}
-              >
-                {s.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Accessibility default toggle */}
-        <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3">
-          <div>
-            <div className="font-semibold text-xs sm:text-sm text-slate-800 dark:text-slate-200">
-              Always Prioritize Step-Free Access
-            </div>
-            <div className="text-xs text-slate-500">
-              Auto-select step-free routing across all future journey searches
-            </div>
-          </div>
-
-          <label className="relative inline-flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              checked={settings.accessibilityPriority}
-              onChange={(e) => updateSetting('accessibilityPriority', e.target.checked)}
-              className="sr-only peer"
-            />
-            <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+        {/* Full Name Field (Pre-filled and editable) */}
+        <div className="mt-5">
+          <label className="block text-xs font-medium text-slate-300 mb-1.5">
+            Full name
           </label>
+          <input
+            className="w-full rounded-xl border border-white/10 bg-white/[.04] px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:border-violet-400 focus:outline-none focus:ring-1 focus:ring-violet-400 transition"
+            required
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Alex Morgan"
+          />
         </div>
-      </section>
 
-      {/* Demo Data Management */}
-      <section className="bg-white dark:bg-slate-900 rounded-2xl p-6 border border-slate-200/80 dark:border-slate-800 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h2 className="font-bold text-sm text-slate-900 dark:text-white">
-            Reset Demo Dataset
-          </h2>
-          <p className="text-xs text-slate-500">
-            Restore sample favorite routes, notifications, and reset custom configurations to default state.
+        {/* Email Field (Read-only) */}
+        <div className="mt-4">
+          <label className="block text-xs font-medium text-slate-300 mb-1.5">
+            Email address
+          </label>
+          <input
+            className="w-full rounded-xl border border-white/5 bg-white/[.02] px-3.5 py-2.5 text-sm text-slate-400 opacity-60 cursor-not-allowed"
+            value={profile?.email || session?.user?.email || "user@tinywins.app"}
+            disabled
+          />
+          <p className="mt-1 text-[11px] text-slate-500">
+            Email is managed by Supabase authentication and cannot be changed here.
           </p>
         </div>
 
-        <button
-          onClick={handleResetData}
-          className="px-4 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:hover:bg-rose-950/70 dark:text-rose-300 rounded-xl text-xs font-bold flex items-center gap-2 border border-rose-200 dark:border-rose-900 transition-colors self-start sm:self-auto"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-          <span>Reset Demo Data</span>
-        </button>
-      </section>
+        {/* Interactive Role Switcher */}
+        <div className="mt-6 pt-5 border-t border-white/5">
+          <label className="block text-xs font-medium text-slate-300 mb-2.5">
+            Account Role
+          </label>
+          <div className="grid grid-cols-2 gap-3 max-w-md">
+            <button
+              type="button"
+              onClick={() => setRole("student")}
+              className={`flex items-center justify-center gap-2.5 rounded-xl py-3 px-4 border text-sm font-medium transition ${
+                role === "student"
+                  ? "border-violet-500/80 bg-violet-600/25 text-violet-200 shadow-md shadow-violet-600/20 ring-1 ring-violet-500/50"
+                  : "border-white/10 bg-white/[.02] text-slate-400 hover:text-slate-200 hover:bg-white/[.05]"
+              }`}
+            >
+              <UserCheck size={16} />
+              <span>🎓 Student</span>
+            </button>
 
-      {/* Floating Save Confirmation */}
-      {saveToast && (
-        <div className="fixed bottom-6 right-6 z-50 bg-slate-900 text-white px-4 py-2.5 rounded-xl shadow-xl text-xs font-semibold flex items-center gap-2 border border-slate-700 animate-in slide-in-from-bottom-2">
-          <CheckCircle2 className="w-4 h-4 text-teal-400" />
-          <span>{saveToast}</span>
+            <button
+              type="button"
+              onClick={() => setRole("teacher")}
+              className={`flex items-center justify-center gap-2.5 rounded-xl py-3 px-4 border text-sm font-medium transition ${
+                role === "teacher"
+                  ? "border-indigo-500/80 bg-indigo-600/25 text-indigo-200 shadow-md shadow-indigo-600/20 ring-1 ring-indigo-500/50"
+                  : "border-white/10 bg-white/[.02] text-slate-400 hover:text-slate-200 hover:bg-white/[.05]"
+              }`}
+            >
+              <ShieldCheck size={16} />
+              <span>👩‍🏫 Teacher</span>
+            </button>
+          </div>
+
+          <div className="mt-3 rounded-xl border border-white/5 bg-white/[.02] p-3 text-xs text-slate-400">
+            {role === "teacher" ? (
+              <p className="text-indigo-200/90 leading-relaxed">
+                <strong className="text-indigo-300">👩‍🏫 Teacher Mode:</strong> Unlocks creating new classrooms, sharing join codes with students, uploading protected study notes/materials, and managing classroom members.
+              </p>
+            ) : (
+              <p className="text-violet-200/90 leading-relaxed">
+                <strong className="text-violet-300">🎓 Student Mode:</strong> Allows joining classes using teacher join codes, viewing protected class study notes, and tracking daily wins and focus streaks.
+              </p>
+            )}
+          </div>
         </div>
-      )}
-    </div>
+
+        {/* Message Banner */}
+        {message && (
+          <div
+            className={`mt-5 rounded-xl border p-3.5 text-xs sm:text-sm flex items-center gap-2.5 transition animate-fadeIn ${
+              message.isError
+                ? "border-rose-500/30 bg-rose-500/10 text-rose-300"
+                : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+            }`}
+          >
+            {message.isError ? (
+              <AlertCircle size={16} className="shrink-0 text-rose-400" />
+            ) : (
+              <CheckCircle2 size={16} className="shrink-0 text-emerald-400" />
+            )}
+            <span className="font-medium">{message.text}</span>
+          </div>
+        )}
+
+        {/* Action Button */}
+        <div className="mt-6 flex items-center gap-3">
+          <button
+            type="submit"
+            disabled={saving}
+            className="rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-violet-600/30 transition hover:from-violet-500 hover:to-indigo-500 disabled:opacity-50 flex items-center gap-2 active:scale-98"
+          >
+            <Save size={15} />
+            <span>{saving ? "Saving changes..." : "Save profile"}</span>
+          </button>
+        </div>
+      </form>
+
+      {/* Logout button */}
+      <div className="mt-8 pt-6 border-t border-white/10 flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-medium text-white">Log out of Tiny Wins</h3>
+          <p className="text-xs text-slate-500">Sign out of your active session on this device.</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void signOut()}
+          className="inline-flex items-center gap-2 rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-2 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/20 hover:text-rose-200"
+        >
+          <LogOut size={14} />
+          <span>Log out</span>
+        </button>
+      </div>
+    </section>
   );
-};
+}

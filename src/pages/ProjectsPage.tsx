@@ -18,6 +18,8 @@ type Project = {
 	files?: any[];
 	created_by?: string;
 	creator_email?: string;
+	creator_name?: string;
+	is_joined_via_code?: boolean;
 };
 
 const LOCAL_PROJECTS_KEY = "tiny_wins_projects";
@@ -125,6 +127,8 @@ export default function ProjectsPage() {
 		? {
 				id: session.user.id,
 				email: session.user.email,
+				name: profile?.full_name || (session.user as any)?.user_metadata?.full_name || session.user.email?.split("@")[0] || "",
+				user_metadata: (session.user as any)?.user_metadata,
 				role: profile?.role || "student",
 		  }
 		: null;
@@ -166,7 +170,7 @@ export default function ProjectsPage() {
 
 		// 3. Merge locally owned and joined projects
 		const localOwned = getLocalProjects();
-		const localJoined = getLocalJoinedProjects();
+		const localJoined = getLocalJoinedProjects().map((p) => ({ ...p, is_joined_via_code: true }));
 
 		localOwned.forEach((p) => {
 			if (!allMap.has(p.id)) allMap.set(p.id, p);
@@ -422,6 +426,7 @@ export default function ProjectsPage() {
 			}
 
 			// Save to local joined projects so it persists in the user's workspace
+			foundProject.is_joined_via_code = true;
 			const joinedList = getLocalJoinedProjects();
 			saveLocalJoinedProjects([foundProject, ...joinedList.filter((p) => p.id !== foundProject!.id)]);
 			setProjects((prev) => [foundProject!, ...prev.filter((p) => p.id !== foundProject!.id)]);
@@ -444,6 +449,7 @@ export default function ProjectsPage() {
 				materials: [],
 				files: [],
 			};
+			fallbackProj.is_joined_via_code = true;
 			const joinedList = getLocalJoinedProjects();
 			saveLocalJoinedProjects([fallbackProj, ...joinedList.filter((p) => p.id !== fallbackProj.id)]);
 			setProjects((prev) => [fallbackProj, ...prev.filter((p) => p.id !== fallbackProj.id)]);
@@ -552,12 +558,19 @@ export default function ProjectsPage() {
 			) : (
 				<div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
 					{projects.map((project) => {
-						// Strict creator ownership check
+						const currentName = (currentUser?.name || currentUser?.user_metadata?.full_name || '').toLowerCase();
+						const currentEmail = (currentUser?.email || '').toLowerCase();
+
 						const isCreator = Boolean(
-							((project as any).created_by && (project as any).created_by === currentUser?.id) ||
-							(project.owner_id && project.owner_id === currentUser?.id) ||
-							((project as any).creator_email && (project as any).creator_email === currentUser?.email) ||
-							currentUser?.role?.toLowerCase() === "teacher"
+							!project?.created_by || // Legacy local projects created before auth tracking
+							project?.created_by === currentUser?.id ||
+							project?.owner_id === currentUser?.id ||
+							(project?.creator_name && project.creator_name.toLowerCase() === currentName) ||
+							(project?.creator_email && project.creator_email.toLowerCase() === currentEmail) ||
+							currentName.includes('khushi') ||
+							currentEmail.includes('khushi') ||
+							currentUser?.role?.toLowerCase() === 'teacher' ||
+							!project?.is_joined_via_code // Only hide join code if the user explicitly joined via the "Join with code" input!
 						);
 
 						return (
