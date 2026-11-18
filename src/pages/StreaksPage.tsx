@@ -679,7 +679,7 @@ export default function StreaksPage() {
             </p>
           </div>
           <span className="text-xs font-semibold text-amber-300 bg-amber-400/10 border border-amber-400/20 px-2.5 py-1 rounded-full">
-            {getMilestones(activeStreak).filter((m) => m.unlocked).length} / {getMilestones(activeStreak).length} Unlocked
+            {getMilestones(activeStreak, bestStreak).filter((m) => m.unlocked).length} / {getMilestones(activeStreak, bestStreak).length} Unlocked
           </span>
         </div>
 

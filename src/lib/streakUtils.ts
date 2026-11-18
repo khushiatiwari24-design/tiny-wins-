@@ -330,6 +330,29 @@ export const formatMinutesToHours = (totalMinutes: number): string => {
   return `${hours}h ${mins}m`;
 };
 
+export const LOCAL_STORAGE_KEY_UNLOCKED_MILESTONES = "tiny_wins_unlocked_milestones";
+
+export const getStoredUnlockedMilestones = (): string[] => {
+  try {
+    const raw = localStorage.getItem(LOCAL_STORAGE_KEY_UNLOCKED_MILESTONES);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {
+    // fallback
+  }
+  return [];
+};
+
+export const saveStoredUnlockedMilestones = (badgeIds: string[]): void => {
+  try {
+    localStorage.setItem(LOCAL_STORAGE_KEY_UNLOCKED_MILESTONES, JSON.stringify(badgeIds));
+  } catch {
+    // fallback
+  }
+};
+
 export interface StreakMilestone {
   id: string;
   days: number;
@@ -337,9 +360,11 @@ export interface StreakMilestone {
   icon: string;
   description: string;
   unlocked: boolean;
+  progress: number;
+  progressText: string;
 }
 
-export const STREAK_MILESTONES: Omit<StreakMilestone, "unlocked">[] = [
+export const STREAK_MILESTONES: Omit<StreakMilestone, "unlocked" | "progress" | "progressText">[] = [
   { id: "win-1", days: 1, title: "1st Win", icon: "🌱", description: "Completed your first tiny win!" },
   { id: "spark-3", days: 3, title: "3-Day Spark", icon: "🔥", description: "3 days of continuous momentum." },
   { id: "rhythm-7", days: 7, title: "7-Day Rhythm", icon: "⚡", description: "A full week of habit excellence." },
@@ -349,10 +374,59 @@ export const STREAK_MILESTONES: Omit<StreakMilestone, "unlocked">[] = [
   { id: "legend-100", days: 100, title: "100-Day Legend", icon: "👑", description: "Mastery of the tiny wins philosophy." },
 ];
 
-export const getMilestones = (currentStreak: number): StreakMilestone[] => {
-  return STREAK_MILESTONES.map((m) => ({
-    ...m,
-    unlocked: currentStreak >= m.days,
-  }));
+export interface MilestoneEvaluationOptions {
+  currentStreak?: number;
+  bestStreak?: number;
+  totalCompletedTasks?: number;
+  totalFocusMinutes?: number;
+  persistedUnlockedIds?: string[];
+}
+
+export const getMilestones = (
+  currentStreak: number = 0,
+  bestStreak: number = 0,
+  totalCompleted: number = 0
+): StreakMilestone[] => {
+  // If totalCompleted was not explicitly passed, inspect local storage and focus minutes as fallback
+  let completed = totalCompleted;
+  if (!completed && typeof window !== "undefined") {
+    try {
+      const dates = getCompletedDates();
+      const raw = localStorage.getItem("tiny_wins_tasks") || localStorage.getItem("tiny-wins-tasks");
+      const tasks = raw ? JSON.parse(raw) : [];
+      const taskCount = Array.isArray(tasks) ? tasks.filter((t: any) => t.completed).length : 0;
+      completed = Math.max(dates.size, taskCount);
+      if (completed === 0 && getReclaimedMinutes() > 0) {
+        completed = 1;
+      }
+    } catch {}
+  }
+
+  const effectiveStreak = Math.max(
+    currentStreak || 0,
+    bestStreak || 0,
+    completed > 0 ? 1 : 0
+  );
+
+  return STREAK_MILESTONES.map((m) => {
+    const target = m.days;
+    let unlocked = false;
+    let progress = 0;
+
+    if (m.id === "win-1" || target === 1) {
+      unlocked = effectiveStreak >= 1;
+      progress = Math.min(effectiveStreak, 1);
+    } else {
+      progress = Math.min(effectiveStreak, target);
+      unlocked = effectiveStreak >= target;
+    }
+
+    return {
+      ...m,
+      unlocked,
+      progress,
+      progressText: `${progress}/${target}d`,
+    };
+  });
 };
 

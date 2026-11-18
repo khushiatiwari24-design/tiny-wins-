@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useMemo } from "react";
 import { useParams, useNavigate, useLocation, useSearchParams } from "react-router-dom";
-import { Trash2, Check, Flame, Sparkles, Zap, Users } from "lucide-react";
+import { Trash2, Check, CheckCircle2, Flame, Sparkles, Zap, Users } from "lucide-react";
 import { requireSupabase } from "../lib/supabase";
 import StrugglingModal from "../components/StrugglingModal";
 import ConfettiCelebration from "../components/celebration/ConfettiCelebration";
@@ -22,10 +22,22 @@ export default function StreakGroupDetailPage() {
   const pathId = location.pathname.split("/").filter(Boolean).pop();
   const groupId = rawId || pathId;
 
-  const currentUser = session?.user || null;
+  const currentUser: any = session?.user
+    ? {
+        ...session.user,
+        name:
+          (session.user as any).name ||
+          profile?.full_name ||
+          session.user.user_metadata?.full_name ||
+          session.user.user_metadata?.name ||
+          session.user.email?.split("@")[0] ||
+          "",
+      }
+    : null;
   const currentUserId = currentUser?.id || null;
   const currentUserName =
     profile?.full_name ||
+    currentUser?.name ||
     currentUser?.user_metadata?.full_name ||
     currentUser?.email?.split("@")[0] ||
     "";
@@ -205,15 +217,16 @@ export default function StreakGroupDetailPage() {
         });
       }
 
-      // Fallback: check streak_group_tasks or group_tasks
-      if (loadedTasks.length === 0) {
-        try {
-          const { data: groupTasks } = await supabase
-            .from("streak_group_tasks")
-            .select("*")
-            .eq("group_id", groupId)
-            .order("created_at", { ascending: false });
-          if (groupTasks && groupTasks.length > 0) {
+      // Retrieve streak_group_tasks to populate tasks or enrich completed_by metadata
+      try {
+        const { data: groupTasks } = await supabase
+          .from("streak_group_tasks")
+          .select("*")
+          .eq("group_id", groupId)
+          .order("created_at", { ascending: false });
+
+        if (groupTasks && groupTasks.length > 0) {
+          if (loadedTasks.length === 0) {
             loadedTasks = groupTasks.map((t: any) => ({
               ...t,
               description: t.title || t.description,
@@ -221,12 +234,19 @@ export default function StreakGroupDetailPage() {
                 localStorage.getItem(`tiny_wins_group_task_${t.id}_completed`) === "true"
                   ? "completed"
                   : t.status || "active",
+              completed_by: t.completed_by,
               author_name: t.author_name || "Member",
               added_by: t.added_by || t.author_name || "Member",
             }));
+          } else {
+            const groupTasksMap = new Map(groupTasks.map((gt: any) => [gt.id, gt]));
+            loadedTasks = loadedTasks.map((t) => {
+              const gt = groupTasksMap.get(t.id);
+              return gt?.completed_by ? { ...t, completed_by: gt.completed_by } : t;
+            });
           }
-        } catch {}
-      }
+        }
+      } catch {}
 
       // Fallback: check local storage tasks
       if (loadedTasks.length === 0) {
@@ -502,12 +522,13 @@ export default function StreakGroupDetailPage() {
   const handleCompleteTask = async (taskId: string) => {
     const targetTask = tasks.find((task) => task.id === taskId);
     const completedMinutes = targetTask?.target_minutes || 30;
+    const completedBy = currentUser?.name || currentUser?.email || "A member";
 
     // 1. Optimistic UI update immediately
     setTasks((prev) =>
       prev.map((t) =>
         t.id === taskId
-          ? { ...t, status: "completed", actual_minutes: completedMinutes }
+          ? { ...t, status: "completed", actual_minutes: completedMinutes, completed_by: completedBy }
           : t
       )
     );
@@ -537,7 +558,7 @@ export default function StreakGroupDetailPage() {
       if (Array.isArray(local) && local.length > 0) {
         const updated = local.map((t: any) =>
           t.id === taskId
-            ? { ...t, status: "completed", actual_minutes: completedMinutes }
+            ? { ...t, status: "completed", actual_minutes: completedMinutes, completed_by: completedBy }
             : t
         );
         localStorage.setItem(localKey, JSON.stringify(updated));
@@ -578,12 +599,12 @@ export default function StreakGroupDetailPage() {
 
     try {
       await supabase
-        .from("streak_group_tasks")
-        .update({
-          status: "completed",
-          completed_at: new Date().toISOString(),
+        .from('streak_group_tasks')
+        .update({ 
+          status: 'completed', 
+          completed_by: currentUser?.name || currentUser?.email || 'A member' 
         })
-        .eq("id", taskId);
+        .eq('id', taskId);
     } catch {}
 
     try {
@@ -953,14 +974,13 @@ export default function StreakGroupDetailPage() {
               </div>
             ) : (
               tasks.map((task) => {
-                // Strict task ownership: only owner can mark completed
-                const isOwner = Boolean(
+                const isCreator = Boolean(
                   (currentUserId && task.user_id && task.user_id === currentUserId) ||
                   (currentUserName && task.added_by && task.added_by.toLowerCase() === currentUserName.toLowerCase()) ||
                   (currentUserName && task.author_name && task.author_name.toLowerCase() === currentUserName.toLowerCase()) ||
                   task.is_my_task === true ||
                   (!task.user_id && !task.added_by && !task.author_name) ||
-                  task.user_id === "local-user"
+                  (task.user_id === "local-user" && (!currentUserId || currentUserId === "local-user"))
                 );
 
                 const rawStatus = (task.status || "active").toLowerCase();
@@ -993,12 +1013,12 @@ export default function StreakGroupDetailPage() {
                         Added by{" "}
                         <span
                           className={
-                            isOwner
+                            isCreator
                               ? "text-[#60a5fa] font-semibold"
                               : "text-zinc-300 font-medium"
                           }
                         >
-                          {isOwner ? "You" : task.author_name || task.added_by || "Member"}
+                          {isCreator ? "You" : task.author_name || task.added_by || "Member"}
                         </span>{" "}
                         •{" "}
                         {task.created_at
@@ -1030,86 +1050,34 @@ export default function StreakGroupDetailPage() {
                       )}
                     </div>
 
-                    {/* Interactive Action Controls strictly respecting task ownership */}
-                    <div className="flex flex-wrap items-center gap-2 shrink-0">
-                      {isOwner ? (
-                        /* Current User is the Task Owner */
-                        <>
-                          {isCompleted ? (
-                            <span className="text-emerald-400 text-xs font-semibold flex items-center gap-1 bg-emerald-950/40 border border-emerald-500/30 px-2.5 py-1 rounded-lg">
-                              <Check size={13} className="text-emerald-400" />
-                              <span>✓ Completed</span>
-                            </span>
-                          ) : isRecovery ? (
-                            <button
-                              type="button"
-                              onClick={() => handleCompleteTask(task.id)}
-                              className="text-xs px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 hover:from-amber-400 hover:via-orange-400 hover:to-rose-400 text-white shadow-lg shadow-orange-950/40 border border-amber-300/40 font-bold flex items-center gap-1.5 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
-                              title="Finish it now and restore active momentum"
-                            >
-                              <Zap size={13} className="text-yellow-200 fill-yellow-200" />
-                              <span>⚡ Ready to Complete</span>
-                            </button>
-                          ) : (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => handleCompleteTask(task.id)}
-                                className="text-xs px-3 py-1.5 rounded-lg bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-md shadow-emerald-950/30 border border-emerald-400/40 font-semibold flex items-center gap-1.5 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
-                                title="Mark task as completed"
-                              >
-                                <Check size={13} className="text-white" />
-                                <span>✓ Mark Completed</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setStrugglingTask(task)}
-                                className="text-xs px-2.5 py-1.5 rounded-lg border border-[#38bdf8]/30 text-[#38bdf8] hover:bg-[#38bdf8]/10 transition flex items-center gap-1 cursor-pointer"
-                                title="Struggling with this task? Start small."
-                              >
-                                😵 Struggling?
-                              </button>
-                            </>
-                          )}
-                        </>
-                      ) : (
-                        /* Task Belongs to Another Member: NEVER show Mark Completed button */
-                        <>
-                          {isCompleted ? (
-                            <span className="text-emerald-400/80 text-xs font-medium flex items-center gap-1 bg-emerald-950/30 border border-emerald-500/20 px-2.5 py-1 rounded-lg">
-                              <Check size={12} className="text-emerald-400" />
-                              <span>✓ Completed</span>
-                            </span>
-                          ) : (
-                            <>
-                              <span className="text-amber-400/80 text-xs bg-amber-500/10 border border-amber-500/20 px-2.5 py-1 rounded-lg font-medium">
-                                Incomplete
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => handleEncourage(task.id)}
-                                className="text-xs px-2.5 py-1 rounded-lg bg-[#0f172a]/70 hover:bg-[#1e293b] text-slate-300 border border-[#1e293b] hover:border-slate-700 transition cursor-pointer"
-                              >
-                                Encourage
-                              </button>
-                            </>
-                          )}
-                        </>
-                      )}
-
-                      {/* Delete Task from Group Hub if task owner or group owner */}
-                      {(isOwner || group?.role === "Owner" || group?.role === "owner" || group?.created_by === currentUserId) && (
+                    {/* Collaborative Task Action Buttons */}
+                    {task.status === 'completed' || isCompleted ? (
+                      <div className="flex items-center gap-2 text-emerald-400 bg-emerald-400/10 px-3 py-1.5 rounded-lg text-sm font-medium">
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>Completed by {task.completed_by || task.added_by || 'Member'}</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
                         <button
-                          type="button"
-                          onClick={() => handleDeleteTask(task.id)}
-                          className="p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/15 border border-transparent hover:border-rose-500/20 transition ml-1 shrink-0 cursor-pointer"
-                          title="Delete task from Group Hub"
-                          aria-label="Delete task"
+                          onClick={() => handleCompleteTask(task.id)}
+                          className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium bg-emerald-500 hover:bg-emerald-600 text-white transition-colors cursor-pointer"
                         >
-                          <Trash2 size={14} />
+                          <CheckCircle2 className="w-4 h-4" />
+                          Mark Completed
                         </button>
-                      )}
-                    </div>
+                        {/* Only show delete button to the original creator */}
+                        {(task.user_id === currentUser?.id || (task.user_id === "local-user" && (!currentUser?.id || currentUser?.id === "local-user"))) && (
+                          <button
+                            onClick={() => handleDeleteTask(task.id)}
+                            className="p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/15 border border-transparent hover:border-rose-500/20 transition cursor-pointer"
+                            title="Delete task from Group Hub"
+                            aria-label="Delete task"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })
